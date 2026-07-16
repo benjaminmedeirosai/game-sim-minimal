@@ -43,6 +43,9 @@ export interface SaveGame {
   /** The active voice style id for the orchestrator's replies (or 'off').
    *  Optional so pre-voice saves still load — the host defaults it on resume. */
   aiVoice?: string;
+  /** The model tag the orchestrator runs on. Optional so older saves load (and
+   *  it's machine-specific) — applied on resume only if the daemon has it. */
+  aiModel?: string;
   /** Recent attributed actions for the Actions panel. */
   actionLog: ActionRecord[];
 }

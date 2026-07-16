@@ -167,6 +167,10 @@ export interface AiConfigView {
   parts: AiPromptPart[];
   /** The request knobs currently in effect for this agent's calls. */
   settings: AiSettings;
+  /** Model tags the daemon has installed, for the Config-tab model picker
+   *  (snapshotted once at host boot). The active one is `settings.model`. May be
+   *  empty if the daemon was unreachable at boot — then no picker is shown. */
+  models: string[];
   /** Every voice style the player can pick (incl. an 'off' entry), for the
    *  Config tab's Voice picker. */
   voices: AiVoiceOption[];

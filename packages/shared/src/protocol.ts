@@ -36,6 +36,9 @@ export type ClientMsg =
   // Switch an agent's voice style (a Config-tab AiVoiceOption id, or 'off' to
   // drop the Voice section). Colony-wide + persisted; changes the live prompt.
   | { m: 'aiVoice'; agent: string; voice: string }
+  // Switch the model an agent runs on (a tag from AiConfigView.models). Colony-
+  // wide + persisted; the host warms the new model so the next command is fast.
+  | { m: 'aiModel'; agent: string; model: string }
   // Manually edit the colony's standing memory from the Memory tab, as the same
   // add/edit/del ops the model uses (ids are the 1-based positions shown there).
   | { m: 'aiMemoryEdit'; agent: string; ops: MemoryOp[] }

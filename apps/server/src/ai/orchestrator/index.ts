@@ -1,7 +1,7 @@
 // The main game orchestrator agent: player command -> Ollama -> Action[].
 // It only PRODUCES actions and an audit record; the host is what dispatches
 // them through applyAction (same path as UI clicks) and stamps id/tick.
-import { MODEL, chatSettings, ollama } from '../client.js';
+import { chatSettings, ollama } from '../client.js';
 import type { ChatOptions } from '../client.js';
 import { assemble } from './prompt.js';
 import { parseResponse } from './parse.js';
@@ -128,10 +128,11 @@ export function orchestratorConfig(
   const { raw, parts } = assemble(world, { memory, roster, history, voice });
   return {
     agent: ORCHESTRATOR_AGENT,
-    model: MODEL,
+    model: ollama.model,
     raw,
     parts,
     settings: chatSettings(ORCHESTRATOR_OPTS),
+    models: ollama.availableModels,
     voices: voiceOptions(),
     voice,
   };

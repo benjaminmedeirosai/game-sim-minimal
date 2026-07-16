@@ -13,9 +13,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { AiSettings } from '@game/shared';
 import type { ChatMessage, ChatResult } from './types.js';
 
-// One-line config knobs. GSM_AI_MODEL overrides the model tag.
+// One-line config knobs. GSM_AI_MODEL sets the model tag used until a player
+// picks another one from the Config tab.
 export const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://localhost:11434';
-export const MODEL = process.env.GSM_AI_MODEL ?? 'gemma4:e4b';
+export const DEFAULT_MODEL = process.env.GSM_AI_MODEL ?? 'gemma4:e4b';
 // Pin the model resident for an hour so it never cold-loads mid-command.
 const KEEP_ALIVE = '60m';
 // The model's context window (tokens). Ollama defaults gemma to 4096, but our
@@ -49,7 +50,7 @@ function requestOptions(opts: ChatOptions): Record<string, unknown> {
  *  what rawChat() sends so the view can never drift from reality. */
 export function chatSettings(opts: ChatOptions = {}): AiSettings {
   return {
-    model: MODEL,
+    model: ollama.model,
     keepAlive: KEEP_ALIVE,
     think: opts.think ?? false,
     options: requestOptions(opts),
@@ -79,14 +80,31 @@ class OllamaClient {
   /** The serial tail: each chat() awaits the previous one. */
   private queue: Promise<unknown> = Promise.resolve();
   private didSpawn = false;
+  /** The model tag every call currently runs against. Starts at DEFAULT_MODEL;
+   *  init() may swap in a persisted pick, and setModel() changes it live. */
+  private currentModel = DEFAULT_MODEL;
+  /** Model tags installed on the daemon, snapshotted once at init (the daemon's
+   *  `/api/tags`, i.e. what `ollama list` shows). Empty until a reachable init. */
+  private models: string[] = [];
 
   get isAvailable(): boolean {
     return this.available;
   }
 
-  /** Health-check the daemon; if it's down, try to start it once; then warm
-   *  the model. Safe to call at host startup — never throws. */
-  async init(): Promise<void> {
+  /** The model tag in effect right now. */
+  get model(): string {
+    return this.currentModel;
+  }
+
+  /** Every model tag the daemon has installed (for the Config-tab picker). */
+  get availableModels(): string[] {
+    return this.models;
+  }
+
+  /** Health-check the daemon; if it's down, try to start it once; snapshot the
+   *  installed models; then warm the model. `preferred` (a persisted pick) is
+   *  honored only if the daemon actually has it. Safe at startup — never throws. */
+  async init(preferred?: string): Promise<void> {
     if (await this.ping()) {
       this.available = true;
     } else {
@@ -94,14 +112,29 @@ class OllamaClient {
       this.available = await this.waitForUp();
     }
     if (this.available) {
-      console.log(`[ai] Ollama ready at ${OLLAMA_URL} (model ${MODEL})`);
+      this.models = await this.fetchModels();
+      if (preferred && this.models.includes(preferred)) this.currentModel = preferred;
+      console.log(
+        `[ai] Ollama ready at ${OLLAMA_URL} (model ${this.currentModel}` +
+          `; ${this.models.length} installed)`,
+      );
       void this.warm();
     } else {
       console.warn(
         `[ai] Ollama not reachable at ${OLLAMA_URL}. Start it with \`ollama serve\` ` +
-          `and \`ollama pull ${MODEL}\`. AI commands will report this until it's up.`,
+          `and \`ollama pull ${this.currentModel}\`. AI commands will report this until it's up.`,
       );
     }
+  }
+
+  /** Switch the active model to `name` (must be one the daemon has installed).
+   *  Warms the new model so the next command isn't cold. Returns whether it
+   *  actually changed — false for an unknown tag or a no-op reselect. */
+  setModel(name: string): boolean {
+    if (!this.models.includes(name) || name === this.currentModel) return false;
+    this.currentModel = name;
+    void this.warm();
+    return true;
   }
 
   private async ping(): Promise<boolean> {
@@ -110,6 +143,22 @@ class OllamaClient {
       return res.ok;
     } catch {
       return false;
+    }
+  }
+
+  /** The daemon's installed model tags, sorted. Empty on any error — a missing
+   *  list just means the Config picker shows only the current model. */
+  private async fetchModels(): Promise<string[]> {
+    try {
+      const res = await fetch(`${OLLAMA_URL}/api/tags`, { method: 'GET' });
+      if (!res.ok) return [];
+      const data = (await res.json()) as { models?: { name?: string }[] };
+      return (data.models ?? [])
+        .map((m) => m.name)
+        .filter((n): n is string => typeof n === 'string' && n.length > 0)
+        .sort();
+    } catch {
+      return [];
     }
   }
 
@@ -150,7 +199,7 @@ class OllamaClient {
   chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResult> {
     const run = this.queue.then(() => {
       if (!this.available) {
-        throw new Error(`Ollama is not running. Start it with \`ollama serve\` (model ${MODEL}).`);
+        throw new Error(`Ollama is not running. Start it with \`ollama serve\` (model ${this.currentModel}).`);
       }
       return this.rawChat(messages, opts);
     });
@@ -167,7 +216,7 @@ class OllamaClient {
   chatDeferred(build: () => ChatMessage[], opts: ChatOptions = {}): Promise<ChatResult> {
     const run = this.queue.then(() => {
       if (!this.available) {
-        throw new Error(`Ollama is not running. Start it with \`ollama serve\` (model ${MODEL}).`);
+        throw new Error(`Ollama is not running. Start it with \`ollama serve\` (model ${this.currentModel}).`);
       }
       return this.rawChat(build(), opts);
     });
@@ -181,7 +230,7 @@ class OllamaClient {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: MODEL,
+        model: this.currentModel,
         messages,
         stream: false,
         keep_alive: KEEP_ALIVE,

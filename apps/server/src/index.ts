@@ -178,6 +178,8 @@ peer.on('connection', (conn) => {
       host.clearAi(msg.agent);
     } else if (msg.m === 'aiVoice') {
       host.setAiVoice(msg.agent, msg.voice);
+    } else if (msg.m === 'aiModel') {
+      host.setAiModel(msg.agent, msg.model);
     } else if (msg.m === 'aiMemoryEdit') {
       const by = roster.list().find((p) => p.id === conn.peer)?.name ?? conn.peer;
       host.editMemory(msg.agent, msg.ops, by);

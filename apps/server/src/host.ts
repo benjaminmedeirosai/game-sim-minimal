@@ -96,6 +96,11 @@ export class Host {
   // 'off' for no persona). Colony-level and persisted, editable at runtime from
   // the AI Config tab; flows into every prompt via the runCommand context.
   private aiVoice: string = DEFAULT_VOICE;
+  // The model tag the orchestrator should run on, if a player picked one. The
+  // live source of truth is the Ollama client (ollama.model); this mirrors it
+  // for persistence and is fed back to ollama.init() on resume (applied only if
+  // the daemon has it). Undefined = use the client's default.
+  private aiModel?: string;
   // Set whenever persisted state changes; the autosave loop only writes when
   // it's true, so a paused/idle world isn't rewritten every interval.
   private dirty = false;
@@ -115,6 +120,7 @@ export class Host {
       this.memoryRev = this.aiMemoryLog.at(-1)?.rev ?? 0;
       // Pre-voice saves have no aiVoice; fall back to the default persona.
       this.aiVoice = save.aiVoice && isVoiceId(save.aiVoice) ? save.aiVoice : DEFAULT_VOICE;
+      this.aiModel = save.aiModel;
       this.actionLog = save.actionLog;
       console.log(
         `[save] resumed world ${this.world.id} at tick ${this.world.tick} from ${savePath()}`,
@@ -126,8 +132,9 @@ export class Host {
     setInterval(() => this.emitStats(), STATS_INTERVAL_MS);
     setInterval(() => this.broadcast(this.snapshotMsg()), SNAPSHOT_INTERVAL_MS);
     setInterval(() => this.autosave(), AUTOSAVE_INTERVAL_MS);
-    // Bring up the shared Ollama client (health-check, spawn-once, warm).
-    void ollama.init();
+    // Bring up the shared Ollama client (health-check, spawn-once, warm). Pass
+    // the persisted model pick so it's restored if the daemon still has it.
+    void ollama.init(this.aiModel);
   }
 
   /** The message a freshly-connected peer needs to render the world, including
@@ -162,6 +169,7 @@ export class Host {
         aiMemory: this.aiMemory,
         aiMemoryLog: this.aiMemoryLog,
         aiVoice: this.aiVoice,
+        aiModel: this.aiModel,
         actionLog: this.actionLog,
       });
       this.dirty = false;
@@ -318,6 +326,17 @@ export class Host {
   setAiVoice(agent: string, voice: string): void {
     if (agent !== ORCHESTRATOR_AGENT || !isVoiceId(voice) || voice === this.aiVoice) return;
     this.aiVoice = voice;
+    this.dirty = true;
+    this.broadcast({ m: 'aiEvent', agent });
+  }
+
+  /** Switch the model the orchestrator runs on (colony-wide). The Ollama client
+   *  validates the tag against what the daemon has installed and warms it;
+   *  we only persist + broadcast on a real change, so an unknown or no-op tag is
+   *  ignored. Broadcasting an aiEvent refreshes every open Config tab. */
+  setAiModel(agent: string, model: string): void {
+    if (agent !== ORCHESTRATOR_AGENT || !ollama.setModel(model)) return;
+    this.aiModel = model;
     this.dirty = true;
     this.broadcast({ m: 'aiEvent', agent });
   }

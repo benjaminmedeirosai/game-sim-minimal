@@ -214,6 +214,10 @@ export function sendAiVoice(agent: string, voice: string): void {
   send({ m: 'aiVoice', agent, voice });
 }
 
+export function sendAiModel(agent: string, model: string): void {
+  send({ m: 'aiModel', agent, model });
+}
+
 export function sendAiMemoryEdit(agent: string, ops: MemoryOp[]): void {
   if (ops.length) send({ m: 'aiMemoryEdit', agent, ops });
 }

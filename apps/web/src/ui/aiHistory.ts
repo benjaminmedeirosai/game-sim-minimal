@@ -21,6 +21,7 @@ import {
   aiEvents,
   sendAiHistoryReq,
   sendAiMemoryEdit,
+  sendAiModel,
   sendAiVoice,
 } from '../net/client';
 import { closeLayer, openLayer } from './escStack';
@@ -184,7 +185,9 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       configMode === 'raw'
         ? `<pre class="ai-cfg-raw">${esc(config.raw)}</pre>`
         : `<div class="ai-cfg-parts">${config.parts.map((p) => partSection(p, cpt)).join('')}</div>`;
-    return toggle + voice + settings + content;
+    // Request settings first — they're model-specific, and the model picker
+    // lives here. Voice below: the personas are common across models.
+    return toggle + settings + voice + content;
   }
 
   // One prompt section in View Pretty. Short sections stay as plain, always-
@@ -235,8 +238,21 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const thinkNote = s.think
       ? ''
       : `<span class="ai-note" title="Thinking is disabled for speed (this model reasons on every call otherwise, ~28× slower). If re-enabled, capture the response's thinking text to display the model's reasoning here.">!</span>`;
+    // The model row is a live picker when the daemon reported >1 installed
+    // model; otherwise it's static (nothing to switch to). Guarantee the active
+    // model is always an option even if it somehow isn't in the reported list.
+    const tags = config.models.includes(s.model) ? config.models : [s.model, ...config.models];
+    const modelRow =
+      tags.length > 1
+        ? `<div class="ai-set"><span>model</span>` +
+          `<select class="ai-model-select" data-model title="Switch the model the AI runs on (must be installed on your Ollama). Colony-wide + persisted; the host warms it for the next command.">` +
+          tags
+            .map((m) => `<option value="${esc(m)}"${m === s.model ? ' selected' : ''}>${esc(m)}</option>`)
+            .join('') +
+          `</select></div>`
+        : `<div class="ai-set"><span>model</span><code>${esc(s.model)}</code></div>`;
     const rows: string[] = [
-      `<div class="ai-set"><span>model</span><code>${esc(s.model)}</code></div>`,
+      modelRow,
       `<div class="ai-set"><span>keep-alive</span><code>${esc(s.keepAlive)}</code></div>`,
       `<div class="ai-set"><span>thinking</span><code>${s.think ? 'on' : 'off'}${thinkNote}</code></div>`,
     ];
@@ -437,6 +453,13 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       e.preventDefault();
       body.querySelector<HTMLElement>(`[data-mem-save="${t.dataset.memId}"]`)?.click();
     }
+  });
+  // Switch the model: fire-and-forget, like voice. The host validates the tag
+  // against the daemon, warms it, persists, and echoes an aiEvent → refetch →
+  // the picker re-renders from the new state.
+  body.addEventListener('change', (e) => {
+    const sel = (e.target as HTMLElement).closest<HTMLSelectElement>('.ai-model-select');
+    if (sel) sendAiModel(current, sel.value);
   });
   // Remember which collapsible sections are expanded so a refetch re-render
   // keeps them open. `toggle` doesn't bubble, so listen in the capture phase.
