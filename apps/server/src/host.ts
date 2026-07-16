@@ -226,7 +226,7 @@ export class Host {
     // no-op: we neither record a revision nor flag a bogus "memory updated" in
     // the audit log (drop them from the exchange's output).
     if (result.memoryOps !== undefined) {
-      if (!this.commitMemory(result.memoryOps, 'AI')) result.output.memoryOps = undefined;
+      if (!this.commitMemory(result.memoryOps, 'AI', onBehalfOf)) result.output.memoryOps = undefined;
     }
 
     // Done: drop it from pending and file the finished exchange.
@@ -279,7 +279,7 @@ export class Host {
    *  Returns whether anything changed. Shared by the model path (runCommand) and
    *  the manual Memory-tab path (editMemory). Does NOT broadcast — callers decide
    *  (runCommand folds it into its own aiEvent). */
-  private commitMemory(ops: MemoryOp[], by: string): boolean {
+  private commitMemory(ops: MemoryOp[], by: string, via?: string): boolean {
     const next = applyMemoryOps(this.aiMemory, ops);
     if (!memoryChanged(this.aiMemory, next)) return false;
     this.aiMemory = next;
@@ -289,6 +289,7 @@ export class Host {
       at: Date.now(),
       tick: this.world.tick,
       by,
+      ...(via ? { via } : {}),
       ops,
       after: next,
     });

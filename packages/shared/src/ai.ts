@@ -32,6 +32,9 @@ export interface MemoryRevision {
   tick: number;
   /** Who caused it: a player name, or 'AI' for a model-driven change. */
   by?: string;
+  /** For an AI change (`by === 'AI'`), the player whose command prompted it.
+   *  Absent for manual edits (the player is already in `by`). */
+  via?: string;
   /** The ops applied in this revision (the ones that actually took effect). */
   ops: MemoryOp[];
   /** The complete memory list AFTER applying this revision. */

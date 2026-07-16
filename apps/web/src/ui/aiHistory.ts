@@ -264,8 +264,13 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       .map((o) => `<li class="ai-mem-op ai-mem-op-${o.op}">${opSummary(o)}</li>`)
       .join('');
     const isAi = (r.by ?? 'AI') === 'AI';
+    // AI changes are prompted by a player's command — show that player too so
+    // it's clear the AI didn't act on its own.
+    const via = isAi && r.via
+      ? `<span class="ai-mem-via" title="Prompted by this player's command">via ${esc(r.via)}</span>`
+      : '';
     const by = isAi
-      ? `<span class="ai-mem-by ai-mem-by-ai" title="Changed by the AI on a command">🧠 AI</span>`
+      ? `<span class="ai-mem-by ai-mem-by-ai" title="Changed by the AI on a command">🧠 AI</span>${via}`
       : `<span class="ai-mem-by ai-mem-by-player" title="Edited by hand in the Memory tab">✎ ${esc(r.by!)}</span>`;
     return (
       `<div class="ai-mem-rev">` +
