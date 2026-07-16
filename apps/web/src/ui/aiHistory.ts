@@ -8,7 +8,7 @@
 // later). Data comes from the host on demand via { m: 'aiHistoryReq' }, and an
 // open window refetches when the host reports a new exchange (aiEvents).
 import { describeAction } from '@game/shared';
-import type { AiConfigView, AiExchange, AiStats } from '@game/shared';
+import type { AiConfigView, AiExchange, AiPromptPart, AiStats } from '@game/shared';
 import { aiData, aiEvents, sendAiHistoryReq, sendAiVoice } from '../net/client';
 import { closeLayer, openLayer } from './escStack';
 import { setActive } from '../state/activeSurface';
@@ -22,6 +22,13 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   let current = 'orchestrator';
   let tab: 'history' | 'config' = 'history';
   let configMode: 'pretty' | 'raw' = 'pretty';
+  // Config View-Pretty sections longer than this (chars) render collapsed by
+  // default, so the long ones (System, World, Voice) don't bury the rest.
+  const COLLAPSE_THRESHOLD = 200;
+  // Which collapsible parts the user has expanded, by label. Survives the
+  // periodic config refetch (aiEvents) so re-rendering doesn't slam open
+  // sections shut mid-read.
+  const openParts = new Set<string>();
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -164,15 +171,26 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const content =
       configMode === 'raw'
         ? `<pre class="ai-cfg-raw">${esc(config.raw)}</pre>`
-        : `<div class="ai-cfg-parts">${config.parts
-            .map(
-              (p) =>
-                `<section class="ai-part"><h3>${esc(p.label)}` +
-                `<span class="ai-part-size">${sizeLabel(p.content.length, cpt)}</span></h3>` +
-                `<pre>${esc(p.content)}</pre></section>`,
-            )
-            .join('')}</div>`;
+        : `<div class="ai-cfg-parts">${config.parts.map((p) => partSection(p, cpt)).join('')}</div>`;
     return toggle + voice + settings + content;
+  }
+
+  // One prompt section in View Pretty. Short sections stay as plain, always-
+  // visible cards; sections over COLLAPSE_THRESHOLD chars become a <details> so
+  // the big ones (System, World, Voice) can be folded away. The open/closed
+  // state is driven by openParts (see the 'toggle' listener) so a background
+  // refetch doesn't reset what the reader has expanded.
+  function partSection(p: AiPromptPart, cpt: number): string {
+    const size = `<span class="ai-part-size">${sizeLabel(p.content.length, cpt)}</span>`;
+    const pre = `<pre>${esc(p.content)}</pre>`;
+    if (p.content.length <= COLLAPSE_THRESHOLD) {
+      return `<section class="ai-part"><h3>${esc(p.label)}${size}</h3>${pre}</section>`;
+    }
+    const open = openParts.has(p.label) ? ' open' : '';
+    return (
+      `<details class="ai-part ai-part-fold" data-part="${esc(p.label)}"${open}>` +
+      `<summary><span class="ai-part-label">${esc(p.label)}</span>${size}</summary>${pre}</details>`
+    );
   }
 
   // The Voice picker: a button per style (plus "Off"), with the active one
@@ -277,6 +295,19 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const voiceBtn = target.closest<HTMLElement>('[data-voice]');
     if (voiceBtn) sendAiVoice(current, voiceBtn.dataset.voice!);
   });
+  // Remember which collapsible sections are expanded so a refetch re-render
+  // keeps them open. `toggle` doesn't bubble, so listen in the capture phase.
+  body.addEventListener(
+    'toggle',
+    (e) => {
+      const d = e.target as HTMLElement;
+      if (!(d instanceof HTMLDetailsElement) || !d.classList.contains('ai-part-fold')) return;
+      const label = d.dataset.part!;
+      if (d.open) openParts.add(label);
+      else openParts.delete(label);
+    },
+    true,
+  );
   select.addEventListener('change', () => {
     current = select.value;
     sendAiHistoryReq(current);

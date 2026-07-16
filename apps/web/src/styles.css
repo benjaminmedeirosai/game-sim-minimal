@@ -390,10 +390,24 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .ai-voice-btns { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .ai-cfg-parts { display: grid; gap: 12px; }
-.ai-part h3 {
+.ai-part h3, .ai-part-fold > summary {
   display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px;
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent);
 }
+/* Collapsible section: the summary is the clickable header; a rotating caret
+   marks open/closed. Closed sections drop their bottom margin (no <pre> shown). */
+.ai-part-fold > summary {
+  cursor: pointer; list-style: none; user-select: none;
+}
+.ai-part-fold > summary::-webkit-details-marker { display: none; }
+.ai-part-fold > summary::before {
+  content: '▸'; color: var(--muted); font-size: 10px; transition: transform 0.12s ease;
+}
+.ai-part-fold[open] > summary::before { transform: rotate(90deg); }
+.ai-part-fold:not([open]) > summary { margin-bottom: 0; }
+.ai-part-fold > summary:hover { color: #fff; }
+.ai-part-fold > summary:hover::before { color: var(--fg); }
+.ai-part-label { flex: 0 0 auto; }
 .ai-part-size {
   margin-left: auto; font-size: 10px; letter-spacing: 0; text-transform: none;
   color: var(--muted); font-variant-numeric: tabular-nums;
