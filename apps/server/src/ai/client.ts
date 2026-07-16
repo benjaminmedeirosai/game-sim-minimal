@@ -1,0 +1,150 @@
+// THE single Ollama instance for the whole host. Every AI agent (the game
+// orchestrator today, others later) routes through this one client, so:
+//   - we hold ONE warm, resident model (long keep_alive) — no cold reloads,
+//     and Ollama's KV/prompt cache stays hot between calls when we keep the
+//     prompt prefix byte-identical;
+//   - all calls are SERIAL (a single promise chain), so a small local model is
+//     never contended and latency stays predictable.
+// We talk to the daemon's HTTP API (/api/chat). We never use `ollama run` —
+// that's an interactive REPL we can't drive. If the daemon is down at startup
+// we try to spawn `ollama serve` ONCE, then fall back to a clear warning.
+import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
+import type { ChatMessage, ChatResult } from './types.js';
+
+// One-line config knobs. GSM_AI_MODEL overrides the model tag.
+export const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://localhost:11434';
+export const MODEL = process.env.GSM_AI_MODEL ?? 'gemma4:e4b';
+// Pin the model resident for an hour so it never cold-loads mid-command.
+const KEEP_ALIVE = '60m';
+
+export interface ChatOptions {
+  /** 0 = deterministic. We want obedient, low-variance action lists. */
+  temperature?: number;
+}
+
+class OllamaClient {
+  /** Set once init() confirms (or starts) a reachable daemon. */
+  private available = false;
+  /** The serial tail: each chat() awaits the previous one. */
+  private queue: Promise<unknown> = Promise.resolve();
+  private didSpawn = false;
+
+  get isAvailable(): boolean {
+    return this.available;
+  }
+
+  /** Health-check the daemon; if it's down, try to start it once; then warm
+   *  the model. Safe to call at host startup — never throws. */
+  async init(): Promise<void> {
+    if (await this.ping()) {
+      this.available = true;
+    } else {
+      this.spawnServeOnce();
+      this.available = await this.waitForUp();
+    }
+    if (this.available) {
+      console.log(`[ai] Ollama ready at ${OLLAMA_URL} (model ${MODEL})`);
+      void this.warm();
+    } else {
+      console.warn(
+        `[ai] Ollama not reachable at ${OLLAMA_URL}. Start it with \`ollama serve\` ` +
+          `and \`ollama pull ${MODEL}\`. AI commands will report this until it's up.`,
+      );
+    }
+  }
+
+  private async ping(): Promise<boolean> {
+    try {
+      const res = await fetch(`${OLLAMA_URL}/api/tags`, { method: 'GET' });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  private spawnServeOnce(): void {
+    if (this.didSpawn) return;
+    this.didSpawn = true;
+    try {
+      console.log('[ai] Ollama down — trying `ollama serve`…');
+      const child = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' });
+      child.on('error', (err) => console.warn(`[ai] could not spawn ollama: ${err.message}`));
+      child.unref();
+    } catch (err) {
+      console.warn(`[ai] could not spawn ollama: ${(err as Error).message}`);
+    }
+  }
+
+  private async waitForUp(): Promise<boolean> {
+    for (let i = 0; i < 20; i++) {
+      await delay(500);
+      if (await this.ping()) return true;
+    }
+    return false;
+  }
+
+  /** Load the model into memory with a throwaway request so the first real
+   *  command is fast. Failures are non-fatal (logged, not thrown). */
+  private async warm(): Promise<void> {
+    try {
+      await this.rawChat([{ role: 'user', content: 'ok' }], { temperature: 0 });
+      console.log('[ai] model warmed');
+    } catch (err) {
+      console.warn(`[ai] warm-up failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** Serial chat: awaits any in-flight call first, so the model is never hit
+   *  concurrently. Throws with a clear message if the daemon is unavailable. */
+  chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResult> {
+    const run = this.queue.then(() => {
+      if (!this.available) {
+        throw new Error(`Ollama is not running. Start it with \`ollama serve\` (model ${MODEL}).`);
+      }
+      return this.rawChat(messages, opts);
+    });
+    // Keep the chain alive even if this call rejects, so one failure doesn't
+    // wedge every later command.
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Like chat(), but the messages are BUILT the moment this call reaches the
+   *  front of the serial queue — not when it was enqueued. So a command that
+   *  waits behind others assembles its prompt against the freshest world/
+   *  conversation state right before it's sent. Same rejection-safe chaining. */
+  chatDeferred(build: () => ChatMessage[], opts: ChatOptions = {}): Promise<ChatResult> {
+    const run = this.queue.then(() => {
+      if (!this.available) {
+        throw new Error(`Ollama is not running. Start it with \`ollama serve\` (model ${MODEL}).`);
+      }
+      return this.rawChat(build(), opts);
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async rawChat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatResult> {
+    const started = Date.now();
+    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: MODEL,
+        messages,
+        stream: false,
+        keep_alive: KEEP_ALIVE,
+        options: { temperature: opts.temperature ?? 0 },
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`Ollama /api/chat ${res.status}: ${await res.text()}`);
+    }
+    const data = (await res.json()) as { message?: { content?: string } };
+    return { text: data.message?.content ?? '', ms: Date.now() - started };
+  }
+}
+
+// The shared singleton every agent imports.
+export const ollama = new OllamaClient();

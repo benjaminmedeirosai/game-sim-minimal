@@ -1,0 +1,19 @@
+{
+  "name": "game-sim-minimal",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w @game/server",
+    "dev:web": "npm run dev -w @game/web",
+    "dev": "concurrently -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
+    "typecheck": "tsc --noEmit -p apps/web && tsc --noEmit -p apps/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  }
+}
