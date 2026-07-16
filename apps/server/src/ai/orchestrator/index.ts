@@ -12,6 +12,7 @@ import type {
   AiConfigView,
   AiExchange,
   ConversationTurn,
+  MemoryOp,
   World,
 } from '@game/shared';
 
@@ -30,9 +31,9 @@ export interface RunResult {
   input: AiExchange['input'];
   output: AiExchange['output'];
   ms: number;
-  /** The new memory the model committed this call, or undefined if unchanged.
-   *  The host applies it as the colony's saved memory. */
-  memory?: string[];
+  /** The memory edit ops the model committed this call, or undefined if it left
+   *  memory alone. The host applies them against the colony's saved memory. */
+  memoryOps?: MemoryOp[];
 }
 
 /** The live inputs a command needs to build its prompt. Resolved LAZILY (right
@@ -88,11 +89,11 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
 
   try {
     const { text, ms, stats } = await ollama.chatDeferred(build, ORCHESTRATOR_OPTS);
-    const { actions, msg, memory } = parseResponse(text, worldAtSend!);
+    const { actions, msg, memoryOps } = parseResponse(text, worldAtSend!);
     const output: AiExchange['output'] = { raw: text, actions, stats };
     if (msg) output.msg = msg;
-    if (memory !== undefined) output.memory = memory;
-    return { actions, input: record!, output, ms, memory };
+    if (memoryOps !== undefined) output.memoryOps = memoryOps;
+    return { actions, input: record!, output, ms, memoryOps };
   } catch (err) {
     // If we failed before assembling (e.g. daemon down), build a record now so
     // the exchange is still auditable.

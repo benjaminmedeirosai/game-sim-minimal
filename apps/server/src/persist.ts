@@ -20,7 +20,7 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ActionRecord, AiExchange, World } from '@game/shared';
+import type { ActionRecord, AiExchange, MemoryRevision, World } from '@game/shared';
 
 // Bump when the SaveGame shape changes incompatibly; a mismatched save is
 // ignored (we start fresh) rather than crashing the host on boot.
@@ -37,6 +37,9 @@ export interface SaveGame {
   aiHistory: Record<string, AiExchange[]>;
   /** Standing player preferences the orchestrator chose to keep. */
   aiMemory: string[];
+  /** Append-only audit log of memory changes (model- or player-driven).
+   *  Optional so pre-memory-log saves still load — the host defaults it to []. */
+  aiMemoryLog?: MemoryRevision[];
   /** The active voice style id for the orchestrator's replies (or 'off').
    *  Optional so pre-voice saves still load — the host defaults it on resume. */
   aiVoice?: string;

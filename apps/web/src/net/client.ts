@@ -12,6 +12,8 @@ import type {
   AiPending,
   ClientMsg,
   HostMsg,
+  MemoryOp,
+  MemoryRevision,
   PeerInfo,
   World,
   WorldSettings,
@@ -40,8 +42,17 @@ export interface AiState {
   config?: AiConfigView;
   // Commands accepted but not yet answered (running + queued), oldest first.
   pending: AiPending[];
+  // The colony's current standing memory and its change log, for the Memory tab.
+  memory: string[];
+  memoryLog: MemoryRevision[];
 }
-export const aiData = new Store<AiState>({ agents: [], exchanges: [], pending: [] });
+export const aiData = new Store<AiState>({
+  agents: [],
+  exchanges: [],
+  pending: [],
+  memory: [],
+  memoryLog: [],
+});
 
 // Bumped whenever the host reports a new exchange, so an open window refetches.
 export const aiEvents = new Store<{ agent: string; n: number }>({ agent: '', n: 0 });
@@ -139,6 +150,8 @@ function handleHostMsg(msg: HostMsg): void {
         exchanges: msg.exchanges,
         config: msg.config,
         pending: msg.pending,
+        memory: msg.memory,
+        memoryLog: msg.memoryLog,
       });
       break;
     case 'aiEvent':
@@ -199,4 +212,8 @@ export function sendAiClear(agent: string): void {
 
 export function sendAiVoice(agent: string, voice: string): void {
   send({ m: 'aiVoice', agent, voice });
+}
+
+export function sendAiMemoryEdit(agent: string, ops: MemoryOp[]): void {
+  if (ops.length) send({ m: 'aiMemoryEdit', agent, ops });
 }

@@ -56,7 +56,7 @@ function chatTurn(x: AiExchange): string {
 
   // A brain badge flags that this response changed the AI's saved memory (the
   // new memory itself lives in the AI window — here we only signal it happened).
-  const mem = x.output.memory
+  const mem = x.output.memoryOps?.length
     ? `<div class="chat-mem"><span class="chat-mem-icon" title="AI memory updated">🧠</span></div>`
     : '';
 

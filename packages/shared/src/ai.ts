@@ -8,6 +8,36 @@ import type { Action } from './actions.js';
  *  can request/auto-refresh its history without duplicating the string. */
 export const ORCHESTRATOR_AGENT = 'orchestrator';
 
+/** A single edit to the colony's standing memory. The model (and the Memory
+ *  tab) address existing items by their 1-based `id` — the number shown in the
+ *  prompt's Memory list — so a change is a few tiny ops instead of re-sending
+ *  the whole list (which, once memory is large, would dominate output tokens).
+ *   - add:  append a new standing preference
+ *   - edit: replace item `id`'s text
+ *   - del:  remove item `id` */
+export type MemoryOp =
+  | { op: 'add'; text: string }
+  | { op: 'edit'; id: number; text: string }
+  | { op: 'del'; id: number };
+
+/** One entry in the memory audit log: what changed, when, by whom, and the full
+ *  resulting list. Append-only + persisted, so memory edits can be reviewed
+ *  over time in the Memory tab. */
+export interface MemoryRevision {
+  /** Monotonic revision number (1-based), stable even as the log is capped. */
+  rev: number;
+  /** Epoch ms the change was applied (host clock; informational). */
+  at: number;
+  /** World tick at the change. */
+  tick: number;
+  /** Who caused it: a player name, or 'AI' for a model-driven change. */
+  by?: string;
+  /** The ops applied in this revision (the ones that actually took effect). */
+  ops: MemoryOp[];
+  /** The complete memory list AFTER applying this revision. */
+  after: string[];
+}
+
 /** One turn of the shared colony conversation, fed back to the model as recent
  *  context so players can reference what was just said. `who` is a player name
  *  or 'AI'. */
@@ -109,10 +139,9 @@ export interface AiExchange {
     /** Model telemetry for this call (tokens, per-stage timings). Absent on a
      *  failure that never reached the model. */
     stats?: AiStats;
-    /** The new persistent memory the model committed on this call, if it chose
-     *  to change it (a full replacement of the prior list). Absent when memory
-     *  was left unchanged — which is the common case. */
-    memory?: string[];
+    /** The memory edit ops the model committed on this call, if it changed
+     *  memory. Absent when memory was left unchanged — the common case. */
+    memoryOps?: MemoryOp[];
   };
   /** Round-trip latency in milliseconds. */
   ms: number;

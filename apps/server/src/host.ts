@@ -20,6 +20,8 @@ import type {
   AiExchange,
   AiPending,
   HostMsg,
+  MemoryOp,
+  MemoryRevision,
   World,
   WorldSettings,
 } from '@game/shared';
@@ -30,6 +32,7 @@ import {
   orchestratorConfig,
   runOrchestrator,
 } from './ai/orchestrator/index.js';
+import { applyMemoryOps, memoryChanged } from './ai/orchestrator/memory.js';
 import { DEFAULT_VOICE, isVoiceId } from './ai/orchestrator/voice.js';
 import { loadSave, savePath, writeSave } from './persist.js';
 
@@ -55,6 +58,10 @@ const SNAPSHOT_INTERVAL_MS = 100;
 const ACTION_LOG_MAX = 120;
 // Per-agent AI exchange history cap (the window can show a lot, but not forever).
 const AI_HISTORY_MAX = 50;
+// How many memory revisions we keep for the audit log. The `rev` counter is
+// monotonic and independent of this, so trimming the tail never renumbers the
+// entries that remain.
+const MEMORY_LOG_MAX = 100;
 // How often the autosave loop flushes, IF the session changed since the last
 // write. A hard kill loses at most this much; graceful exits save immediately.
 const AUTOSAVE_INTERVAL_MS = 5000;
@@ -79,6 +86,12 @@ export class Host {
   // like conversation history and the world — in-memory, so it resets on a
   // server restart.
   private aiMemory: string[] = [];
+  // Append-only audit log of every memory change (model- or player-driven), so
+  // players can review what was remembered/forgotten and when. Capped at
+  // MEMORY_LOG_MAX entries; `memoryRev` is the monotonic revision counter, kept
+  // separately so trimming the log tail never renumbers surviving entries.
+  private aiMemoryLog: MemoryRevision[] = [];
+  private memoryRev = 0;
   // Which voice style the orchestrator's "msg" replies use (a VOICES id, or
   // 'off' for no persona). Colony-level and persisted, editable at runtime from
   // the AI Config tab; flows into every prompt via the runCommand context.
@@ -96,6 +109,10 @@ export class Host {
       this.world = save.world;
       this.aiHistory = new Map(Object.entries(save.aiHistory));
       this.aiMemory = save.aiMemory;
+      // Restore the audit log; the rev counter continues from its last entry so
+      // new revisions never collide with old ones (even across a trim/restart).
+      this.aiMemoryLog = save.aiMemoryLog ?? [];
+      this.memoryRev = this.aiMemoryLog.at(-1)?.rev ?? 0;
       // Pre-voice saves have no aiVoice; fall back to the default persona.
       this.aiVoice = save.aiVoice && isVoiceId(save.aiVoice) ? save.aiVoice : DEFAULT_VOICE;
       this.actionLog = save.actionLog;
@@ -143,6 +160,7 @@ export class Host {
         world: this.world,
         aiHistory: Object.fromEntries(this.aiHistory),
         aiMemory: this.aiMemory,
+        aiMemoryLog: this.aiMemoryLog,
         aiVoice: this.aiVoice,
         actionLog: this.actionLog,
       });
@@ -202,17 +220,13 @@ export class Host {
       }),
     });
 
-    // Adopt any memory change the model committed (a full replacement — see the
-    // "full-return" contract in the prompt). Absent = leave memory as-is. The
-    // model often re-emits the identical list on routine commands; treat that
-    // as a no-op so we neither churn state nor flag a bogus "memory updated" in
-    // the audit log (drop it from the exchange's output).
-    if (result.memory !== undefined) {
-      const prev = this.aiMemory;
-      const changed =
-        result.memory.length !== prev.length || result.memory.some((m, i) => m !== prev[i]);
-      if (changed) this.aiMemory = result.memory;
-      else result.output.memory = undefined;
+    // Apply any memory edit ops the model committed (add/edit/del by id — see
+    // the op contract in the prompt). Absent = leave memory as-is. Ops that
+    // amount to no net change (e.g. a stray out-of-range del) are treated as a
+    // no-op: we neither record a revision nor flag a bogus "memory updated" in
+    // the audit log (drop them from the exchange's output).
+    if (result.memoryOps !== undefined) {
+      if (!this.commitMemory(result.memoryOps, 'AI')) result.output.memoryOps = undefined;
     }
 
     // Done: drop it from pending and file the finished exchange.
@@ -260,6 +274,41 @@ export class Host {
     this.broadcast({ m: 'aiEvent', agent });
   }
 
+  /** Apply a batch of memory edit ops to the colony's standing memory, recording
+   *  an audit revision when (and only when) the net result actually changed.
+   *  Returns whether anything changed. Shared by the model path (runCommand) and
+   *  the manual Memory-tab path (editMemory). Does NOT broadcast — callers decide
+   *  (runCommand folds it into its own aiEvent). */
+  private commitMemory(ops: MemoryOp[], by: string): boolean {
+    const next = applyMemoryOps(this.aiMemory, ops);
+    if (!memoryChanged(this.aiMemory, next)) return false;
+    this.aiMemory = next;
+    this.memoryRev += 1;
+    this.aiMemoryLog.push({
+      rev: this.memoryRev,
+      at: Date.now(),
+      tick: this.world.tick,
+      by,
+      ops,
+      after: next,
+    });
+    if (this.aiMemoryLog.length > MEMORY_LOG_MAX) {
+      this.aiMemoryLog.splice(0, this.aiMemoryLog.length - MEMORY_LOG_MAX);
+    }
+    this.dirty = true;
+    return true;
+  }
+
+  /** Manually edit the colony's standing memory from the Memory tab, using the
+   *  same add/edit/del ops the model uses (ids are the 1-based positions shown
+   *  there). Records an audit revision attributed to the editing player, and
+   *  broadcasts an aiEvent so every open Memory/Config tab refetches. No-op on a
+   *  bad agent, an empty op list, or ops that change nothing. */
+  editMemory(agent: string, ops: MemoryOp[], by: string): void {
+    if (agent !== ORCHESTRATOR_AGENT || ops.length === 0) return;
+    if (this.commitMemory(ops, by)) this.broadcast({ m: 'aiEvent', agent });
+  }
+
   /** Switch the orchestrator's voice style (colony-wide). Validated against the
    *  known styles ('off' included) so a bad id can't disable replies silently.
    *  Persists and broadcasts an aiEvent so every open Config tab refetches and
@@ -289,6 +338,8 @@ export class Host {
         voice: this.aiVoice,
       }),
       pending: this.aiPending.get(agent) ?? [],
+      memory: this.aiMemory,
+      memoryLog: this.aiMemoryLog,
     };
   }
 
@@ -313,6 +364,8 @@ export class Host {
     // memory, and action log so a resume doesn't carry them into the new map.
     this.aiHistory.clear();
     this.aiMemory = [];
+    this.aiMemoryLog = [];
+    this.memoryRev = 0;
     this.actionLog = [];
     this.broadcast(this.snapshotMsg());
     // Persist immediately so a restart right after New World resumes the NEW

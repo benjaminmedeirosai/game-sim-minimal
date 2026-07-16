@@ -6,7 +6,8 @@
 // applyAction is the final authority, but rejecting garbage here keeps the
 // audit log honest about what we actually tried to run.
 import { BUILDINGS, RECIPES } from '@game/shared';
-import type { Action, Coord, World } from '@game/shared';
+import type { Action, Coord, MemoryOp, World } from '@game/shared';
+import { MEMORY_MAX_LEN } from './memory.js';
 
 /** Slice out the first balanced-looking JSON value of a given bracket type and
  *  parse it. Returns the parsed value, or null if none parses. */
@@ -78,34 +79,52 @@ function validateList(arr: unknown, world: World): Action[] {
   return actions;
 }
 
-/** Caps on saved memory, enforced here so a runaway model can't bloat the
- *  cache-stable prompt: at most this many lines, each trimmed to this length. */
-const MEMORY_MAX_ENTRIES = 20;
-const MEMORY_MAX_LEN = 200;
+/** Cap on how many edit ops we accept from a single response, so a runaway
+ *  model can't flood the audit log or the applier. Generous — real edits are a
+ *  handful. Length/count caps on the RESULT live in memory.ts. */
+const MEMORY_MAX_OPS = 20;
 
-/** Parse a "memory" field into the new memory list, or undefined to signal "no
- *  change" (field absent or not an array). An explicit empty array is honored —
- *  it clears memory. Non-string entries and blanks are dropped; the rest are
- *  trimmed, length-capped, and count-capped. */
-function parseMemory(raw: unknown): string[] | undefined {
+/** Parse a "memory" field into a list of edit ops, or undefined to signal "no
+ *  change" (field absent / not an array / no valid ops). This is the whole
+ *  point of the op format: the model sends a few tiny diffs addressing items by
+ *  their 1-based id, never the full list — so there is nothing to echo back and
+ *  memory edits stay cheap even when memory is large.
+ *
+ *  Accepted per entry:
+ *   - {op:"add", text} — text non-empty after trim
+ *   - {op:"edit", id, text} — id an integer ≥1, text non-empty
+ *   - {op:"del"|"delete"|"remove", id} — id an integer ≥1
+ *  Anything malformed is dropped. Returns undefined (not []) when nothing valid
+ *  survives, so the host treats it as "left memory alone". */
+function parseMemoryOps(raw: unknown): MemoryOp[] | undefined {
   if (!Array.isArray(raw)) return undefined;
-  const out: string[] = [];
+  const ops: MemoryOp[] = [];
   for (const item of raw) {
-    if (typeof item !== 'string') continue;
-    const s = item.trim().slice(0, MEMORY_MAX_LEN).trim();
-    if (s) out.push(s);
-    if (out.length >= MEMORY_MAX_ENTRIES) break;
+    if (ops.length >= MEMORY_MAX_OPS) break;
+    if (typeof item !== 'object' || item === null) continue;
+    const o = item as Record<string, unknown>;
+    const kind = typeof o.op === 'string' ? o.op.trim().toLowerCase() : '';
+    const text = typeof o.text === 'string' ? o.text.trim().slice(0, MEMORY_MAX_LEN).trim() : '';
+    const id = Number.isInteger(o.id) ? (o.id as number) : NaN;
+    if (kind === 'add') {
+      if (text) ops.push({ op: 'add', text });
+    } else if (kind === 'edit') {
+      if (id >= 1 && text) ops.push({ op: 'edit', id, text });
+    } else if (kind === 'del' || kind === 'delete' || kind === 'remove') {
+      if (id >= 1) ops.push({ op: 'del', id });
+    }
   }
-  return out;
+  return ops.length ? ops : undefined;
 }
 
 /** The parsed model response: accepted actions, an optional reply, and an
- *  optional new memory list (present only when the model chose to change it). */
+ *  optional list of memory edit ops (present only when the model changed
+ *  memory). */
 export interface OrchestratorResponse {
   actions: Action[];
   msg?: string;
-  /** The full replacement memory list, or undefined to leave memory unchanged. */
-  memory?: string[];
+  /** Memory edit ops to apply, or undefined to leave memory unchanged. */
+  memoryOps?: MemoryOp[];
 }
 
 /** Parse a model response into accepted actions + optional player reply.
@@ -119,10 +138,10 @@ export function parseResponse(text: string, world: World): OrchestratorResponse 
     const o = obj as Record<string, unknown>;
     const actions = validateList(o.actions, world);
     const msg = typeof o.msg === 'string' ? o.msg.trim() : '';
-    const memory = parseMemory(o.memory);
+    const memoryOps = parseMemoryOps(o.memory);
     const res: OrchestratorResponse = { actions };
     if (msg) res.msg = msg;
-    if (memory !== undefined) res.memory = memory;
+    if (memoryOps !== undefined) res.memoryOps = memoryOps;
     return res;
   }
 

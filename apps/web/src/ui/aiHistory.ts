@@ -8,8 +8,21 @@
 // later). Data comes from the host on demand via { m: 'aiHistoryReq' }, and an
 // open window refetches when the host reports a new exchange (aiEvents).
 import { describeAction } from '@game/shared';
-import type { AiConfigView, AiExchange, AiPromptPart, AiStats } from '@game/shared';
-import { aiData, aiEvents, sendAiHistoryReq, sendAiVoice } from '../net/client';
+import type {
+  AiConfigView,
+  AiExchange,
+  AiPromptPart,
+  AiStats,
+  MemoryOp,
+  MemoryRevision,
+} from '@game/shared';
+import {
+  aiData,
+  aiEvents,
+  sendAiHistoryReq,
+  sendAiMemoryEdit,
+  sendAiVoice,
+} from '../net/client';
 import { closeLayer, openLayer } from './escStack';
 import { setActive } from '../state/activeSurface';
 
@@ -20,7 +33,7 @@ function esc(s: string): string {
 export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   let isOpen = false;
   let current = 'orchestrator';
-  let tab: 'history' | 'config' = 'history';
+  let tab: 'history' | 'config' | 'memory' = 'history';
   let configMode: 'pretty' | 'raw' = 'pretty';
   // Config View-Pretty sections longer than this (chars) render collapsed by
   // default, so the long ones (System, World, Voice) don't bury the rest.
@@ -41,6 +54,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
         <span class="spacer"></span>
         <div class="ai-tabs" id="ai-tabs">
           <button class="ai-tab" data-tab="history">History</button>
+          <button class="ai-tab" data-tab="memory">Memory</button>
           <button class="ai-tab" data-tab="config">Config</button>
         </div>
         <button class="icon-btn" id="ai-close" title="Close">✕</button>
@@ -111,13 +125,11 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const said = x.output.msg
       ? `<div class="ai-said"><span class="ai-lbl">AI said</span><p>${esc(x.output.msg)}</p></div>`
       : '';
-    // Only present when the model rewrote saved memory on this call. Show the
-    // new list (or a "cleared" note for an explicit empty replacement).
-    const mem = x.output.memory
+    // Only present when the model changed saved memory on this call. Show the
+    // exact edit ops it committed (add/edit/del), not the whole list.
+    const mem = x.output.memoryOps?.length
       ? `<div class="ai-mem"><span class="ai-lbl">🧠 memory updated</span>` +
-        (x.output.memory.length
-          ? `<ul class="ai-acts">${x.output.memory.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>`
-          : `<div class="ai-none">cleared</div>`) +
+        `<ul class="ai-acts">${x.output.memoryOps.map((o) => `<li>${opSummary(o)}</li>`).join('')}</ul>` +
         `</div>`
       : '';
     return (
@@ -234,6 +246,71 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     return `<section class="ai-settings"><h3>Request settings</h3><div class="ai-set-grid">${rows.join('')}</div></section>`;
   }
 
+  // One memory edit op as a short, escaped, human-readable line. Reused by the
+  // History card (what the model committed) and the Memory tab's change log.
+  function opSummary(op: MemoryOp): string {
+    if (op.op === 'add') return `+ add “${esc(op.text)}”`;
+    if (op.op === 'edit') return `~ edit #${op.id} → “${esc(op.text)}”`;
+    return `− delete #${op.id}`;
+  }
+
+  // One entry in the change log: which revision, who caused it, at what tick,
+  // and the exact ops it applied.
+  function revRow(r: MemoryRevision): string {
+    const ops = r.ops
+      .map((o) => `<li class="ai-mem-op ai-mem-op-${o.op}">${opSummary(o)}</li>`)
+      .join('');
+    return (
+      `<div class="ai-mem-rev">` +
+      `<div class="ai-mem-rev-head"><span class="ai-mem-rev-n">rev ${r.rev}</span>` +
+      `<span class="ai-mem-rev-meta">${esc(r.by ?? 'AI')} · t${r.tick}</span></div>` +
+      `<ul class="ai-mem-ops">${ops}</ul></div>`
+    );
+  }
+
+  // The Memory tab: the colony's current standing memory as an editable numbered
+  // list (each line's number IS the id the model addresses it by), an add row,
+  // and the append-only change history. Manual edits send the SAME add/edit/del
+  // ops the model uses, so both paths funnel through the host's one applier.
+  function renderMemory(memory: string[], log: MemoryRevision[]): string {
+    const rows = memory.length
+      ? memory
+          .map((m, i) => {
+            const id = i + 1;
+            return (
+              `<div class="ai-mem-row">` +
+              `<span class="ai-mem-num">${id}</span>` +
+              `<input class="ai-mem-input" data-mem-id="${id}" value="${esc(m)}" />` +
+              `<button class="seg ai-mem-save" data-mem-save="${id}" title="Save this line">Save</button>` +
+              `<button class="seg ai-mem-del" data-mem-del="${id}" title="Delete this line">✕</button>` +
+              `</div>`
+            );
+          })
+          .join('')
+      : `<div class="ai-none">No standing memory yet.</div>`;
+    const addRow =
+      `<div class="ai-mem-row ai-mem-add">` +
+      `<span class="ai-mem-num">+</span>` +
+      `<input class="ai-mem-input" id="ai-mem-add-input" placeholder="Add a standing preference…" />` +
+      `<button class="seg ai-mem-addbtn" data-mem-add title="Add this line">Add</button>` +
+      `</div>`;
+    const logRows = log.length
+      ? [...log].reverse().map(revRow).join('')
+      : `<div class="ai-none">No changes recorded yet.</div>`;
+    return (
+      `<div class="ai-memory">` +
+      `<section class="ai-mem-current"><div class="ai-mem-head"><h3>Standing memory</h3>` +
+      `<span class="ai-mem-sub">durable preferences the AI applies on every command. ` +
+      `Edit them here, or let the AI update them as players state lasting preferences.</span></div>` +
+      rows +
+      addRow +
+      `</section>` +
+      `<section class="ai-mem-loghdr"><h3>Change history</h3>` +
+      `<div class="ai-mem-log">${logRows}</div></section>` +
+      `</div>`
+    );
+  }
+
   function render(): void {
     const data = aiData.get();
 
@@ -247,7 +324,18 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       b.classList.toggle('active', b.dataset.tab === tab);
     });
 
-    body.innerHTML = tab === 'history' ? renderHistory(data.exchanges) : renderConfig(data.config);
+    if (tab === 'history') {
+      body.innerHTML = renderHistory(data.exchanges);
+    } else if (tab === 'config') {
+      body.innerHTML = renderConfig(data.config);
+    } else {
+      // Memory: background refetches fire on every exchange (aiEvents). Don't
+      // clobber a field the user is mid-edit — skip the re-render while a memory
+      // input has focus; the next render (on blur/tab-switch) picks up fresh.
+      const active = document.activeElement;
+      if (body.contains(active) && active instanceof HTMLInputElement) return;
+      body.innerHTML = renderMemory(data.memory, data.memoryLog);
+    }
   }
 
   // --- open/close --------------------------------------------------------
@@ -279,7 +367,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   tabs.addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLElement>('.ai-tab');
     if (!btn) return;
-    tab = btn.dataset.tab as 'history' | 'config';
+    tab = btn.dataset.tab as 'history' | 'config' | 'memory';
     render();
   });
   body.addEventListener('click', (e) => {
@@ -293,7 +381,50 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     // Switch voice: fire-and-forget. The host echoes an aiEvent, which triggers
     // a refetch (below), so the picker + Voice part re-render from the new state.
     const voiceBtn = target.closest<HTMLElement>('[data-voice]');
-    if (voiceBtn) sendAiVoice(current, voiceBtn.dataset.voice!);
+    if (voiceBtn) {
+      sendAiVoice(current, voiceBtn.dataset.voice!);
+      return;
+    }
+    // Memory edits: each button sends one op. We blur first so the focus guard
+    // in render() lets the host's echoed aiEvent refetch repaint the list.
+    const saveBtn = target.closest<HTMLElement>('[data-mem-save]');
+    if (saveBtn) {
+      const id = Number(saveBtn.dataset.memSave);
+      const input = body.querySelector<HTMLInputElement>(`.ai-mem-input[data-mem-id="${id}"]`);
+      const text = input?.value.trim() ?? '';
+      input?.blur();
+      if (text) sendAiMemoryEdit(current, [{ op: 'edit', id, text }]);
+      return;
+    }
+    const delBtn = target.closest<HTMLElement>('[data-mem-del]');
+    if (delBtn) {
+      sendAiMemoryEdit(current, [{ op: 'del', id: Number(delBtn.dataset.memDel) }]);
+      return;
+    }
+    const addBtn = target.closest<HTMLElement>('[data-mem-add]');
+    if (addBtn) {
+      const input = body.querySelector<HTMLInputElement>('#ai-mem-add-input');
+      const text = input?.value.trim() ?? '';
+      if (text && input) {
+        input.value = '';
+        input.blur();
+        sendAiMemoryEdit(current, [{ op: 'add', text }]);
+      }
+      return;
+    }
+  });
+  // Enter in a memory field commits it (Save for an existing line, Add for the
+  // new-line field), so editing feels like a normal text input.
+  body.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const t = e.target as HTMLElement;
+    if (t.id === 'ai-mem-add-input') {
+      e.preventDefault();
+      body.querySelector<HTMLElement>('[data-mem-add]')?.click();
+    } else if (t instanceof HTMLInputElement && t.dataset.memId) {
+      e.preventDefault();
+      body.querySelector<HTMLElement>(`[data-mem-save="${t.dataset.memId}"]`)?.click();
+    }
   });
   // Remember which collapsible sections are expanded so a refetch re-render
   // keeps them open. `toggle` doesn't bubble, so listen in the capture phase.

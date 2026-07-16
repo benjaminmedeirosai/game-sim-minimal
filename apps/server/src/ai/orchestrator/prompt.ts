@@ -110,7 +110,7 @@ export function systemPrompt(): string {
     'into a plan the simulation can execute, and optionally reply to the players.',
     '',
     'Respond with ONLY one JSON object, no markdown or code fences:',
-    '  {"actions": [ ...action objects... ], "msg": "...", "memory": [ "..." ]}',
+    '  {"actions": [ ...action objects... ], "msg": "...", "memory": [ ...ops... ]}',
     '',
     '  - "actions": the plan (may be [] when there is nothing to do).',
     '  - "msg": a SHORT reply to the player — one brief line, spoken in the',
@@ -120,12 +120,14 @@ export function systemPrompt(): string {
     '    on autonomous ticks with no player, and never narrate every action or',
     '    repeat a line you have used before.',
     '  - "memory": OPTIONAL and OFF BY DEFAULT. OMIT this field on virtually every',
-    '    command. Do NOT echo the existing memory back — repeating unchanged lines',
-    '    is wrong and wasteful. Include "memory" ONLY when the player explicitly',
-    '    states a NEW or CHANGED standing preference ("always ...", "from now on',
-    '    ...", "never ...", "forget ..."); then return the ENTIRE new list, which',
-    '    REPLACES the old one wholesale. A normal task = no "memory" field. See',
-    '    "Memory" below.',
+    '    command. When you DO change memory, send only a few tiny EDIT OPS — never',
+    '    the whole list, and never lines that are staying the same. Each op is one',
+    '    of:',
+    '      {"op":"add","text":"<new preference>"}   add a new standing preference',
+    '      {"op":"edit","id":<n>,"text":"<new text>"}   replace item #n',
+    '      {"op":"del","id":<n>}   remove item #n',
+    '    The id is the number shown beside each line in the "Memory" section below.',
+    '    A normal task = no "memory" field. See "Memory" below.',
     '',
     'Action shapes:',
     '  {"type":"move","unitId":"<id>","to":{"x":<int>,"y":<int>}}',
@@ -164,13 +166,14 @@ export function systemPrompt(): string {
     'Memory (standing player preferences):',
     '  - The "Memory" section below the world holds durable instructions players',
     '    have told you to remember (e.g. "always keep one unit scouting", "prefer',
-    '    axes over pickaxes"). Treat it as always-on: obey every line on EVERY',
-    '    command unless the current command overrides it.',
+    '    axes over pickaxes"), each shown with a number (its id). Treat it as',
+    '    always-on: obey every line on EVERY command unless the current command',
+    '    overrides it.',
     '  - When a player states a lasting preference — "always ...", "from now on',
-    '    ...", "never ...", "stop ...", "forget ..." — update memory by returning',
-    '    the full new list in "memory". Keep the existing lines you are not',
-    '    changing; add, reword, or drop only what the player asked. Each line is a',
-    '    short imperative. Return [] to clear all memory.',
+    '    ...", "never ...", "stop ...", "forget ..." — change memory with edit ops',
+    '    (see "memory" above): "add" a new line, "edit" the id of a line to reword,',
+    '    "del" the id of one to drop. Touch ONLY the lines the player asked about;',
+    '    leave the rest alone (do NOT re-send them). Each line is a short imperative.',
     '  - Store ONLY durable preferences here. Do NOT store one-off commands, chat,',
     '    world state, or coordinates. If a command is a normal one-off task, omit',
     '    "memory" entirely.',
@@ -335,11 +338,12 @@ export function historyContext(history: ConversationTurn[]): string {
 
 /** The persistent memory: standing player preferences the model chose to keep,
  *  more stable than the per-call world/conversation tail but editable (unlike
- *  the fixed system prompt). Rendered as a plain bullet list the model can read
- *  back and rewrite. */
+ *  the fixed system prompt). Rendered as a NUMBERED list — the number is each
+ *  line's 1-based id, which the model uses to target it with edit/del ops (so it
+ *  never has to re-send the list). */
 export function memoryContext(memory: string[]): string {
   if (memory.length === 0) return '(nothing saved yet)';
-  return memory.map((m) => `  - ${m}`).join('\n');
+  return memory.map((m, i) => `  ${i + 1}. ${m}`).join('\n');
 }
 
 export interface AssembleInput {

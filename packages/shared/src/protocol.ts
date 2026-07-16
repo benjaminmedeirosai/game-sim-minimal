@@ -6,7 +6,7 @@
 //                orchestrator). Kept in the model now so future services
 //                (spectators, metrics) slot in without protocol changes.
 import type { Action, ActionRecord } from './actions.js';
-import type { AiConfigView, AiExchange, AiPending } from './ai.js';
+import type { AiConfigView, AiExchange, AiPending, MemoryOp, MemoryRevision } from './ai.js';
 import type { TickStatsSnapshot } from './perf.js';
 import type { World, WorldSettings } from './types.js';
 
@@ -36,6 +36,9 @@ export type ClientMsg =
   // Switch an agent's voice style (a Config-tab AiVoiceOption id, or 'off' to
   // drop the Voice section). Colony-wide + persisted; changes the live prompt.
   | { m: 'aiVoice'; agent: string; voice: string }
+  // Manually edit the colony's standing memory from the Memory tab, as the same
+  // add/edit/del ops the model uses (ids are the 1-based positions shown there).
+  | { m: 'aiMemoryEdit'; agent: string; ops: MemoryOp[] }
   // Round-trip latency probe: `t` is the client's own send time, echoed back
   // in `pong` so the client can measure RTT without any host/client clock sync.
   | { m: 'ping'; t: number };
@@ -58,6 +61,10 @@ export type HostMsg =
       config: AiConfigView;
       // Commands accepted but not yet answered (running + queued), oldest first.
       pending: AiPending[];
+      // The colony's current standing memory (numbered in the Memory tab) and
+      // its append-only change log, so the tab can show + audit both.
+      memory: string[];
+      memoryLog: MemoryRevision[];
     }
   // A lightweight nudge that a new exchange was recorded, so an open history
   // window can refetch. Kept payload-free to stay cheap on the broadcast path.
