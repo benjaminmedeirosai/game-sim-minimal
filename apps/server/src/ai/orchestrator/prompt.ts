@@ -11,7 +11,7 @@ import {
   describeAction,
   visibleTiles,
 } from '@game/shared';
-import type { AiPromptPart, ConversationTurn, World } from '@game/shared';
+import type { AiPromptPart, Coord, ConversationTurn, World } from '@game/shared';
 import type { ChatMessage } from '../types.js';
 
 // --- Stable prefix -------------------------------------------------------
@@ -131,18 +131,59 @@ export function systemPrompt(): string {
     '  - Use only unit ids that exist in the world snapshot.',
     '  - Mining ore REQUIRES a pickaxe — craft one first if no unit has it.',
     '  - Coordinates must be inside the world bounds.',
-    '  - Prefer the nearest suitable unit/target when the command is vague.',
+    '  - Each idle unit line lists its NEAREST target of each kind ("nearest →").',
+    '    Assign a unit to its own nearest suitable target so units do not cross',
+    '    the map when a closer one exists. Spread units across different targets',
+    '    rather than sending several to the same tile.',
+    '  - For broad commands ("everyone", "all units", "the whole colony", "keep',
+    '    working"), give EVERY idle unit (see the idle-units line) a task — do',
+    '    not leave any idle unit unassigned.',
     '  - Do not invent resource coordinates the snapshot does not list.',
   ].join('\n');
 }
 
 // --- Dynamic tail --------------------------------------------------------
 
-/** A compact, model-friendly snapshot of the world: every unit in full, plus
- *  EVERY harvestable target currently in vision, listed by coordinate. The fog
- *  already bounds this to what units can see, so the list stays small; if it
- *  ever grows too large we'll sample/summarize then, not pre-emptively. */
+/** The closest cell to `from` by Manhattan distance (a good proxy — movement is
+ *  4-connected; the sim does the real fog-aware routing). Undefined for an empty
+ *  list. */
+function nearestCell(from: Coord, cells: Coord[]): { cell: Coord; dist: number } | undefined {
+  let best: { cell: Coord; dist: number } | undefined;
+  for (const cell of cells) {
+    const dist = Math.abs(cell.x - from.x) + Math.abs(cell.y - from.y);
+    if (!best || dist < best.dist) best = { cell, dist };
+  }
+  return best;
+}
+
+/** A compact, model-friendly snapshot of the world: every unit in full (idle
+ *  ones annotated with their nearest target of each kind), plus EVERY
+ *  harvestable target currently in vision, listed by coordinate. The fog already
+ *  bounds this to what units can see, so the list stays small; if it ever grows
+ *  too large we'll sample/summarize then, not pre-emptively. */
 export function worldContext(world: World): string {
+  // Harvestable targets by category, kept as numeric cells so we can both list
+  // them AND compute each unit's nearest one. Fruit trees are split from plain
+  // trees: harvesting a fruit tree GATHERS its fruit (the tree stays) while a
+  // bare tree is CHOPPED for wood — "get food" vs "get wood".
+  const cells: Record<string, Coord[]> = {
+    'fruit tree': [],
+    tree: [],
+    rock: [],
+    ore: [],
+  };
+  for (let y = 0; y < world.height; y++) {
+    for (let x = 0; x < world.width; x++) {
+      const obj = world.tiles[y * world.width + x]?.object;
+      if (!obj) continue;
+      const key = obj.kind === 'tree' && obj.hasFruit ? 'fruit tree' : obj.kind;
+      cells[key]?.push({ x, y });
+    }
+  }
+
+  const isIdle = (u: (typeof world.units)[string]): boolean =>
+    !u.job && !u.craftJob && !u.buildJob;
+
   const units = Object.values(world.units).map((u) => {
     const inv = Object.entries(u.inventory)
       .map(([k, n]) => `${k}:${n}`)
@@ -155,29 +196,28 @@ export function worldContext(world: World): string {
         : u.buildJob
           ? `build ${u.buildJob.building}`
           : 'idle';
-    return `  ${u.id} at (${u.pos.x},${u.pos.y}) inv[${inv}] tools[${tools}] ${busy}`;
+    const line = `  ${u.id} at (${u.pos.x},${u.pos.y}) inv[${inv}] tools[${tools}] ${busy}`;
+    if (!isIdle(u)) return line;
+    // Hand each idle unit its nearest target of each kind (Manhattan distance —
+    // movement is 4-connected). Models pick "nearest" badly from a raw coord
+    // list, so we precompute it; this is what stops a unit crossing the map to
+    // a far tree when a closer one exists.
+    const hints = Object.entries(cells)
+      .map(([kind, list]) => {
+        const near = nearestCell(u.pos, list);
+        return near ? `${kind} (${near.cell.x},${near.cell.y}) d${near.dist}` : null;
+      })
+      .filter((h): h is string => h !== null);
+    return hints.length ? `${line}\n    nearest → ${hints.join(', ')}` : line;
   });
 
-  // Fruit trees are split out from plain trees: harvesting a fruit tree GATHERS
-  // its fruit (the tree stays), while harvesting a bare tree CHOPS it for wood.
-  // The AI needs to know which is which to satisfy "get food" vs "get wood".
-  const coords: Record<string, string[]> = {
-    'fruit tree': [],
-    tree: [],
-    rock: [],
-    ore: [],
-  };
-  for (let y = 0; y < world.height; y++) {
-    for (let x = 0; x < world.width; x++) {
-      const obj = world.tiles[y * world.width + x]?.object;
-      if (!obj) continue;
-      const key = obj.kind === 'tree' && obj.hasFruit ? 'fruit tree' : obj.kind;
-      coords[key]?.push(`(${x},${y})`);
-    }
-  }
-  const resources = Object.keys(coords).map(
-    (k) => `  ${k}: ${coords[k]!.length} visible${coords[k]!.length ? ` at ${coords[k]!.join(' ')}` : ''}`,
-  );
+  const idleIds = Object.values(world.units).filter(isIdle).map((u) => u.id);
+
+  const resources = Object.keys(cells).map((k) => {
+    const list = cells[k]!;
+    const at = list.map((c) => `(${c.x},${c.y})`).join(' ');
+    return `  ${k}: ${list.length} visible${list.length ? ` at ${at}` : ''}`;
+  });
 
   // Notable terrain in view. Terrain isn't fogged in the snapshot (only objects
   // are), so unlike the resource scan above we gate on visibleTiles() by hand —
@@ -203,6 +243,7 @@ export function worldContext(world: World): string {
     `World ${world.width}x${world.height}, tick ${world.tick}.`,
     'Units:',
     ...units,
+    `Idle units, free to assign right now: ${idleIds.length ? idleIds.join(', ') : 'none'}.`,
     'Resources your units can currently see (fog of war hides the rest):',
     ...resources,
     'Notable terrain in view (all other visible ground is ordinary grass):',
