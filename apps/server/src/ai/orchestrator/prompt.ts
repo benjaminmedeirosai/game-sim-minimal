@@ -3,9 +3,12 @@
 // byte-identical across calls; only the world snapshot and the user command —
 // the LAST parts — change. That maximizes KV-cache reuse on a warm model.
 import {
+  BASE_TPS,
   BUILDINGS,
   DEFAULT_VISION_RADIUS,
+  HARVEST_POWER,
   HARVEST_RULES,
+  OBJECT_HP,
   RECIPES,
   TERRAIN_COLORS,
   describeAction,
@@ -38,12 +41,27 @@ function buildingLines(): string {
     .join('\n');
 }
 
+// How much the matching tool speeds a harvest up (boosted vs. bare-handed
+// chip rate) — 3× today. Derived so it tracks HARVEST_POWER automatically.
+const TOOL_SPEEDUP = HARVEST_POWER.boosted / HARVEST_POWER.base;
+
+/** Ticks to deplete `hp` at a given per-tick chip `power`, plus the wall-clock
+ *  that is at normal (1×) game speed. Speeds > 1× shorten it proportionally. */
+function workTime(hp: number, power: number): string {
+  const ticks = Math.ceil(hp / power);
+  const secs = Math.round((ticks / BASE_TPS) * 10) / 10;
+  return `~${secs}s (${ticks} ticks)`;
+}
+
 function harvestLines(): string {
   return Object.entries(HARVEST_RULES)
     .map(([kind, rule]) => {
       const bits: string[] = [];
-      if (rule.require) bits.push(`requires ${rule.require}`);
-      if (rule.boost) bits.push(`faster with ${rule.boost}`);
+      const article = (w: string): string => (/^[aeiou]/i.test(w) ? 'an' : 'a');
+      if (rule.require) bits.push(`REQUIRES ${article(rule.require)} ${rule.require} (impossible without one)`);
+      if (rule.boost && rule.boost !== rule.require) {
+        bits.push(`${TOOL_SPEEDUP}× faster with ${article(rule.boost)} ${rule.boost}`);
+      }
       return `  - ${kind}: ${bits.length ? bits.join('; ') : 'bare hands OK'}`;
     })
     .join('\n');
@@ -66,15 +84,19 @@ function terrainLines(): string {
     .join('\n');
 }
 
-/** The object kinds a tile can hold, and what harvesting each yields. "fruit
- *  tree" isn't a distinct kind (it's a tree carrying fruit) but is listed so the
- *  model connects the world-context label to a behavior. */
+/** The object kinds a tile can hold, what harvesting each yields, and how long
+ *  it takes (HP + work time by hand vs. with the matching tool) so the model can
+ *  reason about durations. "fruit tree" isn't a distinct kind (it's a tree
+ *  carrying fruit) but is listed so the model connects the label to a behavior.
+ *  Work times exclude travel and are at normal (1×) game speed. */
 function objectLines(): string {
+  const base = HARVEST_POWER.base;
+  const boosted = HARVEST_POWER.boosted;
   return [
-    '  - tree: chop for wood (the tree is felled/removed)',
-    '  - fruit tree: a tree bearing fruit — gather for fruit/food (stays standing)',
-    '  - rock: mine for stone',
-    '  - ore: mine for metal ore (iron/copper/gold); REQUIRES a pickaxe',
+    `  - tree: chop for wood (tree removed) — ${OBJECT_HP.tree} HP; ${workTime(OBJECT_HP.tree, base)} by hand, ${workTime(OBJECT_HP.tree, boosted)} with an axe`,
+    '  - fruit tree: a tree bearing fruit — gather for fruit/food, instant (1 tick); tree stays standing',
+    `  - rock: mine for stone — ${OBJECT_HP.rock} HP; ${workTime(OBJECT_HP.rock, base)} by hand, ${workTime(OBJECT_HP.rock, boosted)} with a pickaxe`,
+    `  - ore: mine for metal ore (iron/copper/gold) — ${OBJECT_HP.ore} HP; REQUIRES a pickaxe, ${workTime(OBJECT_HP.ore, boosted)}`,
   ].join('\n');
 }
 
@@ -120,6 +142,9 @@ export function systemPrompt(): string {
     buildingLines(),
     'Harvest rules:',
     harvestLines(),
+    `  (Work times are at normal 1× game speed and exclude walking there; the`,
+    `   sim runs ${BASE_TPS} ticks/second, and a higher speed setting shortens`,
+    `   them proportionally.)`,
     '',
     'Fog of war:',
     `  - Each unit only sees tiles within ${DEFAULT_VISION_RADIUS} tiles of itself.`,

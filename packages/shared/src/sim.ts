@@ -35,6 +35,16 @@ const WORK_SCALE = 10;
 // Fruit picked in a single gather (non-destructive; leaves the tree standing).
 const FRUIT_YIELD: Record<string, number> = { fruit: 3 };
 
+// Starting hit-points per harvestable object kind. Chop/mine chip HARVEST_POWER
+// per tick, so hp is effectively "work required". Exported (and used by
+// worldgen below) so the AI prompt can quote exact durations without drifting
+// from the numbers the sim actually runs.
+export const OBJECT_HP = {
+  tree: 5 * WORK_SCALE,
+  rock: 4 * WORK_SCALE,
+  ore: 8 * WORK_SCALE,
+} as const;
+
 // Cumulative "terrain the colony has ever seen", per world, kept OUT of the
 // serialized World (it must never reach clients or the wire). A bit per tile;
 // 1 = seen at least once. Travel planning trusts real walkability only on seen
@@ -159,15 +169,15 @@ export function isBuildable(world: World, x: number, y: number): boolean {
 function rollObject(terrain: TerrainType, rnd: () => number): WorldObject | undefined {
   if (terrain === 'grass') {
     if (rnd() < 0.1) {
-      return { kind: 'tree', type: pick(TREE_TYPES, rnd), hasFruit: rnd() < 0.3, hp: 5 * WORK_SCALE };
+      return { kind: 'tree', type: pick(TREE_TYPES, rnd), hasFruit: rnd() < 0.3, hp: OBJECT_HP.tree };
     }
     if (rnd() < 0.02) {
-      return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: 4 * WORK_SCALE };
+      return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: OBJECT_HP.rock };
     }
   } else if (terrain === 'stone') {
     const r = rnd();
-    if (r < 0.25) return { kind: 'ore', type: pick(ORE_TYPES, rnd), hp: 8 * WORK_SCALE };
-    if (r < 0.6) return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: 4 * WORK_SCALE };
+    if (r < 0.25) return { kind: 'ore', type: pick(ORE_TYPES, rnd), hp: OBJECT_HP.ore };
+    if (r < 0.6) return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: OBJECT_HP.rock };
   }
   return undefined;
 }
