@@ -157,8 +157,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
  * is a fixed black so it darkens regardless of theme; pointer-events off so the
  * veil never intercepts map clicks. */
 #fog rect { pointer-events: none; shape-rendering: crispEdges; }
+/* Explored-but-not-visible: a translucent veil so remembered terrain/objects
+   read as a dimmed recollection. */
 .fog-dim { fill: rgba(0, 0, 0, 0.5); }
-.fog-unseen { fill: rgba(0, 0, 0, 0.86); }
+/* Never seen: fully opaque in the map's void color, so undiscovered land leaks
+   ZERO visual information (no terrain colour, no pond, nothing). */
+.fog-unseen { fill: #0c0e13; }
 
 /* ---- selected-unit overlay (bottom-left of the world) ---- */
 .sel-info {
