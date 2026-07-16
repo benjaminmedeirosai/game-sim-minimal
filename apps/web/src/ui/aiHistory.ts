@@ -255,15 +255,22 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   }
 
   // One entry in the change log: which revision, who caused it, at what tick,
-  // and the exact ops it applied.
+  // and the exact ops it applied. The host stamps `by` as the literal 'AI' for
+  // a model-driven change or a player's name for a manual Memory-tab edit, so we
+  // render a distinct badge for each — an AI change and a change by a player who
+  // happens to be reading shouldn't look the same.
   function revRow(r: MemoryRevision): string {
     const ops = r.ops
       .map((o) => `<li class="ai-mem-op ai-mem-op-${o.op}">${opSummary(o)}</li>`)
       .join('');
+    const isAi = (r.by ?? 'AI') === 'AI';
+    const by = isAi
+      ? `<span class="ai-mem-by ai-mem-by-ai" title="Changed by the AI on a command">🧠 AI</span>`
+      : `<span class="ai-mem-by ai-mem-by-player" title="Edited by hand in the Memory tab">✎ ${esc(r.by!)}</span>`;
     return (
       `<div class="ai-mem-rev">` +
       `<div class="ai-mem-rev-head"><span class="ai-mem-rev-n">rev ${r.rev}</span>` +
-      `<span class="ai-mem-rev-meta">${esc(r.by ?? 'AI')} · t${r.tick}</span></div>` +
+      `${by}<span class="ai-mem-rev-meta">t${r.tick}</span></div>` +
       `<ul class="ai-mem-ops">${ops}</ul></div>`
     );
   }

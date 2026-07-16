@@ -447,9 +447,17 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .ai-mem-rev {
   background: #0a0c11; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
 }
-.ai-mem-rev-head { display: flex; align-items: baseline; gap: 10px; }
+.ai-mem-rev-head { display: flex; align-items: center; gap: 8px; }
 .ai-mem-rev-n { font-size: 11px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
-.ai-mem-rev-meta { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ai-mem-rev-meta { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+/* Who made the change: an AI badge vs. a by-hand player badge, so the two
+   sources are never confused (even a player literally named "AI"). */
+.ai-mem-by {
+  font-size: 10px; font-weight: 600; border-radius: 999px; padding: 1px 8px;
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.ai-mem-by-ai { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.ai-mem-by-player { color: #4ade80; border-color: color-mix(in srgb, #4ade80 45%, var(--border)); }
 .ai-mem-ops { list-style: none; margin: 5px 0 0; padding: 0; display: grid; gap: 2px; }
 .ai-mem-op { font-size: 12px; padding-left: 10px; border-left: 2px solid var(--border); }
 .ai-mem-op-add { border-left-color: #4ade80; }
