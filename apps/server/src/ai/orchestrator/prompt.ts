@@ -98,9 +98,10 @@ export function systemPrompt(): string {
 
 // --- Dynamic tail --------------------------------------------------------
 
-/** A compact, model-friendly snapshot of the world: every unit in full, plus a
- *  bounded sample of harvestable targets per kind (a 48² world has thousands of
- *  tiles — we summarize instead of dumping them). */
+/** A compact, model-friendly snapshot of the world: every unit in full, plus
+ *  EVERY harvestable target currently in vision, listed by coordinate. The fog
+ *  already bounds this to what units can see, so the list stays small; if it
+ *  ever grows too large we'll sample/summarize then, not pre-emptively. */
 export function worldContext(world: World): string {
   const units = Object.values(world.units).map((u) => {
     const inv = Object.entries(u.inventory)
@@ -117,19 +118,16 @@ export function worldContext(world: World): string {
     return `  ${u.id} at (${u.pos.x},${u.pos.y}) inv[${inv}] tools[${tools}] ${busy}`;
   });
 
-  const samples: Record<string, string[]> = { tree: [], rock: [], ore: [] };
-  const counts: Record<string, number> = { tree: 0, rock: 0, ore: 0 };
+  const coords: Record<string, string[]> = { tree: [], rock: [], ore: [] };
   for (let y = 0; y < world.height; y++) {
     for (let x = 0; x < world.width; x++) {
       const obj = world.tiles[y * world.width + x]?.object;
       if (!obj) continue;
-      counts[obj.kind] = (counts[obj.kind] ?? 0) + 1;
-      const arr = samples[obj.kind];
-      if (arr && arr.length < 10) arr.push(`(${x},${y})`);
+      coords[obj.kind]?.push(`(${x},${y})`);
     }
   }
-  const resources = Object.keys(counts).map(
-    (k) => `  ${k}: ${counts[k]} visible, e.g. ${samples[k]!.join(' ') || '—'}`,
+  const resources = Object.keys(coords).map(
+    (k) => `  ${k}: ${coords[k]!.length} visible${coords[k]!.length ? ` at ${coords[k]!.join(' ')}` : ''}`,
   );
 
   const builds = Object.values(world.buildings).map(

@@ -1,7 +1,8 @@
 // The main game orchestrator agent: player command -> Ollama -> Action[].
 // It only PRODUCES actions and an audit record; the host is what dispatches
 // them through applyAction (same path as UI clicks) and stamps id/tick.
-import { MODEL, ollama } from '../client.js';
+import { MODEL, chatSettings, ollama } from '../client.js';
+import type { ChatOptions } from '../client.js';
 import { assemble } from './prompt.js';
 import { parseResponse } from './parse.js';
 import { ORCHESTRATOR_AGENT } from '@game/shared';
@@ -14,6 +15,11 @@ import type {
 } from '@game/shared';
 
 export { ORCHESTRATOR_AGENT };
+
+// The tuning for orchestrator calls, in one place so the request and the
+// Config-tab display can't disagree: deterministic (temperature 0) for
+// obedient, low-variance action lists.
+const ORCHESTRATOR_OPTS: ChatOptions = { temperature: 0 };
 
 export interface RunResult {
   actions: Action[];
@@ -63,9 +69,9 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
   };
 
   try {
-    const { text, ms } = await ollama.chatDeferred(build, { temperature: 0 });
+    const { text, ms, stats } = await ollama.chatDeferred(build, ORCHESTRATOR_OPTS);
     const { actions, msg } = parseResponse(text, worldAtSend!);
-    return { actions, input: record!, output: { raw: text, actions, msg }, ms };
+    return { actions, input: record!, output: { raw: text, actions, msg, stats }, ms };
   } catch (err) {
     // If we failed before assembling (e.g. daemon down), build a record now so
     // the exchange is still auditable.
@@ -87,5 +93,11 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
  *  placeholder) shown raw and sectioned. */
 export function orchestratorConfig(world: World): AiConfigView {
   const { raw, parts } = assemble(world);
-  return { agent: ORCHESTRATOR_AGENT, model: MODEL, raw, parts };
+  return {
+    agent: ORCHESTRATOR_AGENT,
+    model: MODEL,
+    raw,
+    parts,
+    settings: chatSettings(ORCHESTRATOR_OPTS),
+  };
 }

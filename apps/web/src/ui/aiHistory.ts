@@ -8,7 +8,7 @@
 // later). Data comes from the host on demand via { m: 'aiHistoryReq' }, and an
 // open window refetches when the host reports a new exchange (aiEvents).
 import { describeAction } from '@game/shared';
-import type { AiConfigView, AiExchange } from '@game/shared';
+import type { AiConfigView, AiExchange, AiStats } from '@game/shared';
 import { aiData, aiEvents, sendAiHistoryReq } from '../net/client';
 import { closeLayer, openLayer } from './escStack';
 import { setActive } from '../state/activeSurface';
@@ -48,6 +48,23 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
 
   // --- rendering ---------------------------------------------------------
 
+  // A compact telemetry strip: tokens in/out, generation speed, and where the
+  // time went. Only the fields the backend reported are shown.
+  function statsRow(s: AiStats | undefined): string {
+    if (!s) return '';
+    const chips: string[] = [];
+    if (s.promptTokens != null || s.outputTokens != null) {
+      chips.push(`<span class="ai-chip"><b>${s.promptTokens ?? '?'}</b> in / <b>${s.outputTokens ?? '?'}</b> out tok</span>`);
+    }
+    if (s.tokensPerSec != null) chips.push(`<span class="ai-chip">${s.tokensPerSec} tok/s</span>`);
+    if (s.loadMs != null && s.loadMs > 0) chips.push(`<span class="ai-chip">load ${s.loadMs}ms</span>`);
+    if (s.promptMs != null) chips.push(`<span class="ai-chip">prompt ${s.promptMs}ms</span>`);
+    if (s.evalMs != null) chips.push(`<span class="ai-chip">gen ${s.evalMs}ms</span>`);
+    if (s.model) chips.push(`<span class="ai-chip ai-chip-model">${esc(s.model)}</span>`);
+    if (s.doneReason && s.doneReason !== 'stop') chips.push(`<span class="ai-chip ai-chip-warn">${esc(s.doneReason)}</span>`);
+    return chips.length ? `<div class="ai-stats">${chips.join('')}</div>` : '';
+  }
+
   function exchangeCard(x: AiExchange): string {
     const acts = x.output.actions.length
       ? `<ul class="ai-acts">${x.output.actions.map((a) => `<li>${esc(describeAction(a))}</li>`).join('')}</ul>`
@@ -61,6 +78,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       `<div class="ai-xchg">` +
       `<div class="ai-xhead"><span class="ai-cmd">${esc(x.input.command)}</span>` +
       `<span class="ai-xmeta">${who} · t${x.tick} · ${x.ms}ms</span></div>` +
+      statsRow(x.output.stats) +
       said +
       `<div class="ai-xcol"><span class="ai-lbl">Actions (${x.output.actions.length})</span>${acts}${err}</div>` +
       `<details class="ai-raw"><summary>model output</summary><pre>${esc(x.output.raw || '(empty)')}</pre></details>` +
@@ -84,6 +102,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       `<button class="seg ${configMode === 'raw' ? 'active' : ''}" data-cfg="raw">View Raw</button>` +
       `<span class="ai-model">model: ${esc(config.model)}</span>` +
       `</div>`;
+    const settings = settingsCard(config);
     const content =
       configMode === 'raw'
         ? `<pre class="ai-cfg-raw">${esc(config.raw)}</pre>`
@@ -93,7 +112,21 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
                 `<section class="ai-part"><h3>${esc(p.label)}</h3><pre>${esc(p.content)}</pre></section>`,
             )
             .join('')}</div>`;
-    return toggle + content;
+    return toggle + settings + content;
+  }
+
+  // The tuning knobs the host actually sends per call — model, keep-alive, and
+  // the verbatim options object (temperature today, more later).
+  function settingsCard(config: AiConfigView): string {
+    const s = config.settings;
+    const rows: string[] = [
+      `<div class="ai-set"><span>model</span><code>${esc(s.model)}</code></div>`,
+      `<div class="ai-set"><span>keep-alive</span><code>${esc(s.keepAlive)}</code></div>`,
+    ];
+    for (const [k, v] of Object.entries(s.options)) {
+      rows.push(`<div class="ai-set"><span>${esc(k)}</span><code>${esc(String(v))}</code></div>`);
+    }
+    return `<section class="ai-settings"><h3>Request settings</h3><div class="ai-set-grid">${rows.join('')}</div></section>`;
   }
 
   function render(): void {

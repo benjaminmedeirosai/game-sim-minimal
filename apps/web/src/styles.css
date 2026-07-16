@@ -316,6 +316,15 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   margin: 3px 0 0; font-size: 13px; line-height: 1.4; color: #d7ccff;
   border-left: 2px solid #a78bfa; padding-left: 10px;
 }
+.ai-stats { display: flex; flex-wrap: wrap; gap: 5px; }
+.ai-chip {
+  font-size: 10px; color: var(--muted); background: #0a0c11;
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.ai-chip b { color: var(--fg); font-weight: 600; }
+.ai-chip-model { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.ai-chip-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 .ai-none { font-size: 12px; color: var(--muted); font-style: italic; }
 .ai-err { font-size: 12px; color: var(--warn); margin-top: 4px; }
 .ai-raw summary { cursor: pointer; font-size: 11px; color: var(--accent); }
@@ -333,6 +342,18 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .seg:hover { background: #2f3441; }
 .seg.active { background: color-mix(in srgb, var(--accent) 26%, transparent); border-color: var(--accent); color: #fff; }
 .ai-model { margin-left: auto; font-size: 11px; color: var(--muted); }
+.ai-settings { margin-bottom: 16px; }
+.ai-settings h3 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
+.ai-set-grid {
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 14px;
+  background: #0a0c11; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px;
+}
+.ai-set { display: contents; }
+.ai-set span { font-size: 12px; color: var(--muted); }
+.ai-set code {
+  font-size: 12px; color: var(--fg); font-variant-numeric: tabular-nums;
+  justify-self: start; word-break: break-all;
+}
 .ai-cfg-parts { display: grid; gap: 12px; }
 .ai-part h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
 .ai-part pre, .ai-cfg-raw {

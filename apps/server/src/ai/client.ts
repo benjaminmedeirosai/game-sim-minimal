@@ -10,6 +10,7 @@
 // we try to spawn `ollama serve` ONCE, then fall back to a clear warning.
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { AiSettings } from '@game/shared';
 import type { ChatMessage, ChatResult } from './types.js';
 
 // One-line config knobs. GSM_AI_MODEL overrides the model tag.
@@ -22,6 +23,35 @@ export interface ChatOptions {
   /** 0 = deterministic. We want obedient, low-variance action lists. */
   temperature?: number;
 }
+
+/** The verbatim `options` object we send the daemon for a given call — the
+ *  single source of truth for both the request and the Config-tab display. */
+function requestOptions(opts: ChatOptions): Record<string, unknown> {
+  return { temperature: opts.temperature ?? 0 };
+}
+
+/** The tuning knobs currently in effect, for the Config tab. Mirrors exactly
+ *  what rawChat() sends so the view can never drift from reality. */
+export function chatSettings(opts: ChatOptions = {}): AiSettings {
+  return { model: MODEL, keepAlive: KEEP_ALIVE, options: requestOptions(opts) };
+}
+
+/** Ollama's non-streaming /api/chat response, incl. the telemetry fields we
+ *  surface. Durations are nanoseconds; counts are whole tokens. */
+interface OllamaChatResponse {
+  model?: string;
+  message?: { content?: string };
+  done_reason?: string;
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_count?: number;
+  prompt_eval_duration?: number;
+  eval_count?: number;
+  eval_duration?: number;
+}
+
+const nsToMs = (ns?: number): number | undefined =>
+  ns == null ? undefined : Math.round(ns / 1e6);
 
 class OllamaClient {
   /** Set once init() confirms (or starts) a reachable daemon. */
@@ -135,14 +165,31 @@ class OllamaClient {
         messages,
         stream: false,
         keep_alive: KEEP_ALIVE,
-        options: { temperature: opts.temperature ?? 0 },
+        options: requestOptions(opts),
       }),
     });
     if (!res.ok) {
       throw new Error(`Ollama /api/chat ${res.status}: ${await res.text()}`);
     }
-    const data = (await res.json()) as { message?: { content?: string } };
-    return { text: data.message?.content ?? '', ms: Date.now() - started };
+    const data = (await res.json()) as OllamaChatResponse;
+    const evalCount = data.eval_count;
+    const evalDur = data.eval_duration; // ns
+    return {
+      text: data.message?.content ?? '',
+      ms: Date.now() - started,
+      stats: {
+        model: data.model,
+        promptTokens: data.prompt_eval_count,
+        outputTokens: evalCount,
+        totalMs: nsToMs(data.total_duration),
+        loadMs: nsToMs(data.load_duration),
+        promptMs: nsToMs(data.prompt_eval_duration),
+        evalMs: nsToMs(data.eval_duration),
+        tokensPerSec:
+          evalCount && evalDur ? Math.round((evalCount / evalDur) * 1e9) : undefined,
+        doneReason: data.done_reason,
+      },
+    };
   }
 }
 

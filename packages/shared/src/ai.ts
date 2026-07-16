@@ -39,6 +39,42 @@ export interface AiPromptPart {
   content: string;
 }
 
+/** Per-call model telemetry, lifted from the daemon's response. All optional:
+ *  a failed call (or a backend that doesn't report a field) simply omits it.
+ *  Durations are milliseconds; token counts are whole tokens. */
+export interface AiStats {
+  /** The model tag the daemon actually ran (may differ from the requested one). */
+  model?: string;
+  /** Prompt/input tokens the model read (Ollama `prompt_eval_count`). */
+  promptTokens?: number;
+  /** Generated/output tokens (Ollama `eval_count`). */
+  outputTokens?: number;
+  /** Wall-clock the daemon reported for the whole request (`total_duration`). */
+  totalMs?: number;
+  /** Time spent loading the model into memory (`load_duration`); ~0 when warm. */
+  loadMs?: number;
+  /** Time evaluating the prompt / filling the KV cache (`prompt_eval_duration`). */
+  promptMs?: number;
+  /** Time generating the response (`eval_duration`). */
+  evalMs?: number;
+  /** Output tokens per second during generation (eval_count / eval_duration). */
+  tokensPerSec?: number;
+  /** Why generation stopped (`done_reason`: "stop", "length", …). */
+  doneReason?: string;
+}
+
+/** The exact request knobs we hand the model backend for a call — surfaced in
+ *  the Config tab so players can see (not guess) how the AI is tuned. `options`
+ *  is the verbatim options object sent to the daemon (temperature, and any
+ *  future num_ctx / think / etc.). */
+export interface AiSettings {
+  model: string;
+  /** How long the backend keeps the model resident between calls. */
+  keepAlive: string;
+  /** The verbatim `options` payload sent per request. */
+  options: Record<string, unknown>;
+}
+
 /** A single request/response round-trip with an AI agent, for the History tab.
  *  Captures exactly what went out and came back so a run is fully auditable. */
 export interface AiExchange {
@@ -66,6 +102,9 @@ export interface AiExchange {
     msg?: string;
     /** Set when the call or parse failed. */
     error?: string;
+    /** Model telemetry for this call (tokens, per-stage timings). Absent on a
+     *  failure that never reached the model. */
+    stats?: AiStats;
   };
   /** Round-trip latency in milliseconds. */
   ms: number;
@@ -79,4 +118,6 @@ export interface AiConfigView {
   model: string;
   raw: string;
   parts: AiPromptPart[];
+  /** The request knobs currently in effect for this agent's calls. */
+  settings: AiSettings;
 }
