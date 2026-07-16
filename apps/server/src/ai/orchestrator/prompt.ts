@@ -7,7 +7,9 @@ import {
   DEFAULT_VISION_RADIUS,
   HARVEST_RULES,
   RECIPES,
+  TERRAIN_COLORS,
   describeAction,
+  visibleTiles,
 } from '@game/shared';
 import type { AiPromptPart, ConversationTurn, World } from '@game/shared';
 import type { ChatMessage } from '../types.js';
@@ -47,6 +49,35 @@ function harvestLines(): string {
     .join('\n');
 }
 
+// One-line notes on each terrain type. Only water blocks movement; everything
+// else is ordinary walkable ground. Keyed by TerrainType so a new terrain shows
+// up automatically (with a generic note) rather than silently missing.
+const TERRAIN_NOTES: Record<string, string> = {
+  grass: 'plains — the default walkable land',
+  dirt: 'bare earth — walkable',
+  stone: 'rocky ground — walkable',
+  sand: 'beach/shore, usually rings water — walkable',
+  water: 'lake/river — BLOCKS movement; units cannot enter or cross it',
+};
+
+function terrainLines(): string {
+  return Object.keys(TERRAIN_COLORS)
+    .map((t) => `  - ${t}: ${TERRAIN_NOTES[t] ?? 'walkable'}`)
+    .join('\n');
+}
+
+/** The object kinds a tile can hold, and what harvesting each yields. "fruit
+ *  tree" isn't a distinct kind (it's a tree carrying fruit) but is listed so the
+ *  model connects the world-context label to a behavior. */
+function objectLines(): string {
+  return [
+    '  - tree: chop for wood (the tree is felled/removed)',
+    '  - fruit tree: a tree bearing fruit — gather for fruit/food (stays standing)',
+    '  - rock: mine for stone',
+    '  - ore: mine for metal ore (iron/copper/gold); REQUIRES a pickaxe',
+  ].join('\n');
+}
+
 /** The system prompt: role, output contract, and the full action + registry
  *  reference. Deterministic given the registries, so it's cache-stable. */
 export function systemPrompt(): string {
@@ -77,6 +108,11 @@ export function systemPrompt(): string {
     '  - a plain "tree" is CHOPPED for wood (removed);',
     '  - rock and ore are MINED.',
     'So harvest a fruit tree for food, a plain tree for wood.',
+    '',
+    'Terrain types (the ground a tile is made of):',
+    terrainLines(),
+    'Object types (what can sit on a tile):',
+    objectLines(),
     '',
     'Recipes (craft):',
     recipeLines(),
@@ -143,6 +179,22 @@ export function worldContext(world: World): string {
     (k) => `  ${k}: ${coords[k]!.length} visible${coords[k]!.length ? ` at ${coords[k]!.join(' ')}` : ''}`,
   );
 
+  // Notable terrain in view. Terrain isn't fogged in the snapshot (only objects
+  // are), so unlike the resource scan above we gate on visibleTiles() by hand —
+  // the model should only learn about ground its units have actually seen. Grass
+  // is the ordinary default and omitted; we list the rest (water, sand, dirt,
+  // stone) by coordinate so the model knows where the water/shore/etc. are.
+  const terrainCells: Record<string, string[]> = {};
+  for (const key of visibleTiles(world)) {
+    const [x, y] = key.split(',').map(Number) as [number, number];
+    const terrain = world.tiles[y * world.width + x]?.terrain;
+    if (!terrain || terrain === 'grass') continue;
+    (terrainCells[terrain] ??= []).push(`(${x},${y})`);
+  }
+  const terrain = Object.keys(terrainCells).map(
+    (k) => `  ${k}: ${terrainCells[k]!.length} tiles at ${terrainCells[k]!.join(' ')}`,
+  );
+
   const builds = Object.values(world.buildings).map(
     (b) => `  ${b.type}@(${b.pos.x},${b.pos.y})`,
   );
@@ -153,6 +205,8 @@ export function worldContext(world: World): string {
     ...units,
     'Resources your units can currently see (fog of war hides the rest):',
     ...resources,
+    'Notable terrain in view (all other visible ground is ordinary grass):',
+    ...(terrain.length ? terrain : ['  none — all visible ground is grass']),
     builds.length ? 'Buildings:' : 'Buildings: none',
     ...builds,
   ].join('\n');
