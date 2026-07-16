@@ -20,6 +20,7 @@ import type { Unit, World } from '@game/shared';
 import { sendAction } from '../net/client';
 import { camera, game } from '../state/game';
 import { selection } from '../state/selection';
+import { setActive } from '../state/activeSurface';
 import { closeLayer, openLayer } from '../ui/escStack';
 import { buildingSvg, objectSvg, unitSvg } from './sprites';
 import { clampTilesAcross, refreshViewportInfo, setViewportContainer, wheelZoom } from './viewport';
@@ -300,6 +301,7 @@ function attachControls(svg: SVGSVGElement, container: HTMLElement, view: View):
   let lastY = 0;
 
   container.addEventListener('pointerdown', (e) => {
+    setActive('map'); // clicking the map claims keyboard focus, even if a panel is open
     down = true;
     movedFar = false;
     startX = lastX = e.clientX;

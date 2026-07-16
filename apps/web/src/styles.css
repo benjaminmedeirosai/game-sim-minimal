@@ -47,6 +47,15 @@ body { margin: 0; background: var(--bg); color: var(--fg); overflow: hidden; }
 .btn-ghost { background: #262a35; color: var(--fg); }
 .btn-ghost:hover { background: #2f3441; }
 
+/* Visible ring for keyboard navigation across every button variant. */
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.speed-btn:focus-visible,
+.menu-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* ---- speed ---- */
 .speed { display: flex; gap: 4px; }
 .speed-btn {

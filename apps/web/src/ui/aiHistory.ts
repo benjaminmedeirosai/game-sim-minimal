@@ -11,6 +11,7 @@ import { describeAction } from '@game/shared';
 import type { AiConfigView, AiExchange } from '@game/shared';
 import { aiData, aiEvents, sendAiHistoryReq } from '../net/client';
 import { closeLayer, openLayer } from './escStack';
+import { setActive } from '../state/activeSurface';
 
 function esc(s: string): string {
   return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
@@ -117,6 +118,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     isOpen = true;
     overlay.hidden = false;
     openLayer('ai', close); // Esc closes the modal (top of the stack)
+    setActive('ai');
     sendAiHistoryReq(current); // pull fresh history + config
     render();
   }
@@ -124,6 +126,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     isOpen = false;
     overlay.hidden = true;
     closeLayer('ai');
+    setActive('map');
   }
   function toggle(): void {
     isOpen ? close() : open();

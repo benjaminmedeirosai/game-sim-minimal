@@ -13,6 +13,8 @@ import { mountAiHistory } from './aiHistory';
 import { mountSidebar } from './sidebar';
 import { closeLayer, installEscStack, openLayer } from './escStack';
 import { mountConnGate } from './connGate';
+import { installMapKeys } from './mapKeys';
+import { setActive } from '../state/activeSurface';
 import { settings } from '../state/settings';
 import { startClientPerf } from '../state/clientPerf';
 
@@ -22,18 +24,18 @@ export function mountApp(root: HTMLElement): void {
       <header class="topbar">
         <span class="brand">game-sim-minimal</span>
         <span class="spacer"></span>
-        <span class="coord-badge" id="coord-badge"></span>
         <div class="topbar-actions">
-          <button class="btn btn-ghost" data-panel="new">New World</button>
-          <button class="btn btn-ghost" data-panel="room">Room <span id="peer-count" class="count">0</span></button>
-          <button class="btn btn-ghost" data-ai>AI</button>
-          <button class="btn btn-ghost" data-panel="hud">Perf</button>
-          <button class="btn btn-ghost" data-panel="settings">Settings</button>
-          <button class="btn btn-ghost" data-layout title="Toggle left sidebar">☰ Sidebar</button>
+          <button class="btn btn-ghost" data-panel="new" title="Create a new world">New World</button>
+          <button class="btn btn-ghost" data-panel="room" title="Room: connected players & host">Room <span id="peer-count" class="count">0</span></button>
+          <button class="btn btn-ghost" data-ai title="AI history &amp; prompt config">AI</button>
+          <button class="btn btn-ghost" data-panel="hud" title="Performance stats (server + this client)">Perf</button>
+          <button class="btn btn-ghost" data-panel="settings" title="Settings (zoom, sidebar width, …)">Settings</button>
+          <button class="btn btn-ghost" data-layout title="Toggle the left sidebar (AI chat + actions)">☰ Sidebar</button>
         </div>
         <div class="controls">
           <div id="speed" class="speed"></div>
           <div id="zoomctl"></div>
+          <span class="coord-badge" id="coord-badge" title="Camera center tile (x, y)"></span>
         </div>
       </header>
       <div class="stage">
@@ -68,9 +70,12 @@ export function mountApp(root: HTMLElement): void {
       openLayer('panel', () => {
         open[1].hidden = true;
         closeLayer('panel');
+        setActive('map');
       });
+      setActive(`panel:${open[0]}`); // an open panel owns the keyboard until you click away
     } else {
       closeLayer('panel');
+      setActive('map');
     }
   };
 
@@ -84,8 +89,13 @@ export function mountApp(root: HTMLElement): void {
   mountRoom(panels.get('room')!);
   mountHud(panels.get('hud')!);
   mountSettings(panels.get('settings')!);
-  mountSidebar(root.querySelector<HTMLElement>('#sidebar')!);
+  const sidebarEl = root.querySelector<HTMLElement>('#sidebar')!;
+  mountSidebar(sidebarEl);
   mountZoomControls(root.querySelector<HTMLElement>('#zoomctl')!);
+
+  // Interacting with the sidebar takes keyboard focus away from the map, so
+  // WASD panning pauses while you're reading/typing there.
+  sidebarEl.addEventListener('pointerdown', () => setActive('sidebar'));
 
   // Left-sidebar layout is an opt-in alternative to the floating panels; toggle
   // adds/removes the class on .app. The floating cards/command bar are untouched.
@@ -102,8 +112,10 @@ export function mountApp(root: HTMLElement): void {
     if (app.classList.contains('layout-sidebar')) refreshViewportInfo();
   });
 
-  // One Escape owner for every dismissible layer; client-perf sampling loop.
+  // One Escape owner for every dismissible layer; WASD/arrow map panning;
+  // client-perf sampling loop.
   installEscStack();
+  installMapKeys();
   startClientPerf();
 
   // Full-screen connection gate / landing page shown until a host answers.

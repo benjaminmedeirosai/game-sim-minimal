@@ -72,8 +72,8 @@ export function mountSidebar(aside: HTMLElement): void {
       <div class="chat-log" id="sb-chat-log"></div>
       <form class="chat-form" id="sb-chat-form">
         <input class="chat-input" type="text" autocomplete="off" spellcheck="false"
-               placeholder="Tell the AI what to do…" />
-        <button class="btn" type="submit">Send</button>
+               placeholder="Tell the AI what to do…" title="Type an instruction for the AI" />
+        <button class="btn" type="submit" title="Send this command to the AI">Send</button>
       </form>
     </section>
     <section class="sb-section sb-actions">
