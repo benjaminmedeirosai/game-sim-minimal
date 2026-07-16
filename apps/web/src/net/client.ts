@@ -47,15 +47,28 @@ export const aiData = new Store<AiState>({ agents: [], exchanges: [], pending: [
 export const aiEvents = new Store<{ agent: string; n: number }>({ agent: '', n: 0 });
 
 let conn: DataConnection | undefined;
+let peer: Peer | undefined;
+let clientName = '';
 let lastWorldId: string | undefined;
 
+/** Re-run the last connection attempt (used by the "Retry" button on the
+ *  connection gate). No-op before the first connect(). */
+export function reconnect(): void {
+  if (clientName) connect(clientName);
+}
+
 export function connect(name: string): void {
+  clientName = name;
   net.set({ status: 'connecting', error: undefined });
 
-  const peer = new Peer(); // random id assigned by the broker
+  // Tear down any peer from a previous (failed) attempt so retries start clean.
+  peer?.destroy();
 
-  peer.on('open', () => {
-    conn = peer.connect(ROOM_ID, { reliable: true });
+  const p = new Peer(); // random id assigned by the broker
+  peer = p;
+
+  p.on('open', () => {
+    conn = p.connect(ROOM_ID, { reliable: true });
 
     conn.on('open', () => {
       const hello: ClientMsg = { m: 'hello', name, role: 'player' };

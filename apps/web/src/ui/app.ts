@@ -12,6 +12,7 @@ import { mountCommandBar } from './commandBar';
 import { mountAiHistory } from './aiHistory';
 import { mountSidebar } from './sidebar';
 import { closeLayer, installEscStack, openLayer } from './escStack';
+import { mountConnGate } from './connGate';
 import { settings } from '../state/settings';
 import { startClientPerf } from '../state/clientPerf';
 
@@ -43,6 +44,7 @@ export function mountApp(root: HTMLElement): void {
       <aside class="panel-float" data-name="room" hidden></aside>
       <aside class="panel-float panel-hud" data-name="hud" hidden></aside>
       <aside class="panel-float" data-name="settings" hidden></aside>
+      <div class="conn-gate" id="conn-gate"></div>
     </div>`;
 
   const worldEl = root.querySelector<HTMLElement>('#world')!;
@@ -103,6 +105,9 @@ export function mountApp(root: HTMLElement): void {
   // One Escape owner for every dismissible layer; client-perf sampling loop.
   installEscStack();
   startClientPerf();
+
+  // Full-screen connection gate / landing page shown until a host answers.
+  mountConnGate(root.querySelector<HTMLElement>('#conn-gate')!);
 
   // The AI History window is a full-screen modal, not a side panel.
   const aiWindow = mountAiHistory(root);
