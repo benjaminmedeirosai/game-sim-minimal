@@ -8,6 +8,7 @@ import { mountNewWorld } from './newWorld';
 import { mountSpeed } from './speed';
 import { mountHud } from './hud';
 import { mountSettings } from './settings';
+import { mountControls } from './controls';
 import { mountCommandBar } from './commandBar';
 import { mountAiHistory } from './aiHistory';
 import { mountSidebar } from './sidebar';
@@ -30,7 +31,8 @@ export function mountApp(root: HTMLElement): void {
           <button class="btn btn-ghost" data-panel="room" title="Room: connected players & host">Room <span id="peer-count" class="count">0</span></button>
           <button class="btn btn-ghost" data-ai title="AI history &amp; prompt config">AI</button>
           <button class="btn btn-ghost" data-panel="hud" title="Performance stats (server + this client)">Perf</button>
-          <button class="btn btn-ghost" data-panel="settings" title="Settings (zoom, sidebar width, …)">Settings</button>
+          <button class="btn btn-ghost" data-panel="settings" title="Settings (zoom, pan speed, sidebar width, …)">Settings</button>
+          <button class="btn btn-ghost" data-panel="controls" title="Controls &amp; hotkeys reference">Controls</button>
           <button class="btn btn-ghost" data-layout title="Toggle the left sidebar (AI chat + actions)">☰ Sidebar</button>
         </div>
         <div class="controls">
@@ -48,6 +50,7 @@ export function mountApp(root: HTMLElement): void {
       <aside class="panel-float" data-name="room" hidden></aside>
       <aside class="panel-float panel-hud" data-name="hud" hidden></aside>
       <aside class="panel-float" data-name="settings" hidden></aside>
+      <aside class="panel-float" data-name="controls" hidden></aside>
       <div class="conn-gate" id="conn-gate"></div>
     </div>`;
 
@@ -91,6 +94,7 @@ export function mountApp(root: HTMLElement): void {
   mountRoom(panels.get('room')!);
   mountHud(panels.get('hud')!);
   mountSettings(panels.get('settings')!);
+  mountControls(panels.get('controls')!);
   const sidebarEl = root.querySelector<HTMLElement>('#sidebar')!;
   mountSidebar(sidebarEl);
   mountZoomControls(root.querySelector<HTMLElement>('#zoomctl')!);

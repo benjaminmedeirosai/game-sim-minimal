@@ -10,10 +10,17 @@ export interface Settings {
   zoomToCursor: boolean;
   /** Width (px) of the opt-in left sidebar layout. */
   sidebarWidth: number;
+  /** WASD/arrow pan speed, as a fraction of the viewport width per second
+   *  (zoom-independent; 0.7 ≈ 1.4s to cross the screen). */
+  panSpeed: number;
 }
 
 export const ZOOM_SENS_MIN = 0.0003;
 export const ZOOM_SENS_MAX = 0.004;
+
+export const PAN_SPEED_DEFAULT = 0.7;
+export const PAN_SPEED_MIN = 0.2;
+export const PAN_SPEED_MAX = 2;
 
 // The sidebar's default width and the range the setting allows: half the
 // default at the low end, 50% more at the high end (per the design).
@@ -26,6 +33,7 @@ const DEFAULTS: Settings = {
   zoomSensitivity: 0.0012,
   zoomToCursor: false,
   sidebarWidth: SIDEBAR_W_DEFAULT,
+  panSpeed: PAN_SPEED_DEFAULT,
 };
 const KEY = 'gsm-settings';
 

@@ -1,4 +1,6 @@
 import {
+  PAN_SPEED_MAX,
+  PAN_SPEED_MIN,
   SIDEBAR_W_MAX,
   SIDEBAR_W_MIN,
   SIDEBAR_W_STEP,
@@ -26,6 +28,14 @@ export function mountSettings(el: HTMLElement): void {
       </label>
       <p class="hint">Off = zoom keeps the screen center fixed.</p>
 
+      <label>Keyboard pan speed
+        <input type="range" name="panSpeed"
+               min="${PAN_SPEED_MIN}" max="${PAN_SPEED_MAX}" step="0.1"
+               value="${s.panSpeed}" />
+        <span class="range-ends"><span>Gentle</span><span>Fast</span></span>
+      </label>
+      <p class="hint">How fast WASD / arrow keys slide the map.</p>
+
       <label>Sidebar width <span class="range-val" id="sbw-val">${s.sidebarWidth}px</span>
         <span class="stepper">
           <button type="button" class="icon-btn" id="sbw-minus" title="Narrower">−</button>
@@ -51,6 +61,11 @@ export function mountSettings(el: HTMLElement): void {
   const cursor = el.querySelector<HTMLInputElement>('input[name="zoomToCursor"]')!;
   cursor.addEventListener('change', () => {
     settings.set({ zoomToCursor: cursor.checked });
+  });
+
+  const pan = el.querySelector<HTMLInputElement>('input[name="panSpeed"]')!;
+  pan.addEventListener('input', () => {
+    settings.set({ panSpeed: Number(pan.value) });
   });
 
   // Sidebar width: − / slider / +. Buttons nudge by a step; all three clamp to

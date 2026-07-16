@@ -5,16 +5,13 @@
 // clicked away from keeps the keys inert until you click back onto the map.
 import { camera, game } from '../state/game';
 import { isMapActive } from '../state/activeSurface';
+import { PAN_SPEED_DEFAULT, settings } from '../state/settings';
 
 // key → unit direction (screen space; +y is down).
 const KEYS: Record<string, [number, number]> = {
   w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0],
   arrowup: [0, -1], arrowdown: [0, 1], arrowleft: [-1, 0], arrowright: [1, 0],
 };
-
-// Pan speed as a fraction of the viewport width per second, so it feels the
-// same at every zoom level (~1.4s to cross the screen).
-const PAN_FRAC_PER_SEC = 0.7;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
@@ -42,7 +39,10 @@ export function installMapKeys(): void {
     if (dx === 0 && dy === 0) return;
     const len = Math.hypot(dx, dy) || 1;
     const cam = camera.get();
-    const move = cam.tilesAcross * PAN_FRAC_PER_SEC * dt;
+    // Fraction of the viewport per second (user-tunable), so panning feels the
+    // same at every zoom level.
+    const panSpeed = settings.get().panSpeed ?? PAN_SPEED_DEFAULT;
+    const move = cam.tilesAcross * panSpeed * dt;
     camera.set({
       cx: clamp(cam.cx + (dx / len) * move, 0, world.width),
       cy: clamp(cam.cy + (dy / len) * move, 0, world.height),
