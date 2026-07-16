@@ -6,7 +6,7 @@
 import type { World } from './types.js';
 
 /** How far a unit sees, in tiles, when it carries no explicit radius. */
-export const DEFAULT_VISION_RADIUS = 10;
+export const DEFAULT_VISION_RADIUS = 5;
 
 /** Stable "x,y" key for the visible/explored sets. */
 export function tileKey(x: number, y: number): string {

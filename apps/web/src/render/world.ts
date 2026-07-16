@@ -205,8 +205,10 @@ function buildFog(r: CullRange): string {
     for (let x = r.x0; x <= r.x1; x++) {
       if (isVisible(x, y)) continue;
       const cls = isExplored(x, y) ? 'fog-dim' : 'fog-unseen';
-      // 1.02 overlap matches the terrain rects so the veil has no seams.
-      parts.push(`<rect class="${cls}" x="${x}" y="${y}" width="1.02" height="1.02"/>`);
+      // Exact 1×1, no overlap: the rects are semi-transparent, so any overlap
+      // would double the alpha along shared edges and paint a dark grid. crisp
+      // edges (see CSS) keeps neighbours flush without anti-aliased seams.
+      parts.push(`<rect class="${cls}" x="${x}" y="${y}" width="1" height="1"/>`);
     }
   }
   return parts.join('');

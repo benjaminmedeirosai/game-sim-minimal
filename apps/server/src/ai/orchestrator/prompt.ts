@@ -4,6 +4,7 @@
 // the LAST parts — change. That maximizes KV-cache reuse on a warm model.
 import {
   BUILDINGS,
+  DEFAULT_VISION_RADIUS,
   HARVEST_RULES,
   RECIPES,
   describeAction,
@@ -80,11 +81,18 @@ export function systemPrompt(): string {
     'Harvest rules:',
     harvestLines(),
     '',
+    'Fog of war:',
+    `  - Each unit only sees tiles within ${DEFAULT_VISION_RADIUS} tiles of itself.`,
+    '  - The resource lists show ONLY objects currently in some unit\'s sight.',
+    '    Anything beyond that is unknown — it may exist but is not listed.',
+    '  - To find more resources, move a unit to scout unexplored ground first.',
+    '',
     'Rules:',
     '  - Use only unit ids that exist in the world snapshot.',
     '  - Mining ore REQUIRES a pickaxe — craft one first if no unit has it.',
     '  - Coordinates must be inside the world bounds.',
     '  - Prefer the nearest suitable unit/target when the command is vague.',
+    '  - Do not invent resource coordinates the snapshot does not list.',
   ].join('\n');
 }
 
@@ -121,7 +129,7 @@ export function worldContext(world: World): string {
     }
   }
   const resources = Object.keys(counts).map(
-    (k) => `  ${k}: ${counts[k]} total, e.g. ${samples[k]!.join(' ') || '—'}`,
+    (k) => `  ${k}: ${counts[k]} visible, e.g. ${samples[k]!.join(' ') || '—'}`,
   );
 
   const builds = Object.values(world.buildings).map(
@@ -132,7 +140,7 @@ export function worldContext(world: World): string {
     `World ${world.width}x${world.height}, tick ${world.tick}.`,
     'Units:',
     ...units,
-    'Resources on map:',
+    'Resources your units can currently see (fog of war hides the rest):',
     ...resources,
     builds.length ? 'Buildings:' : 'Buildings: none',
     ...builds,

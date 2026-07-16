@@ -27,6 +27,10 @@ const MAX_DIM = 120;
 const SPAWN_UNITS = 4;
 // Ticks between walk steps — units move 1 tile every this many ticks.
 const UNIT_STEP_TICKS = 2;
+// Global multiplier on how long manual work takes: object hit-points (chop/mine)
+// and craft/build durations are all scaled by this. Bumping it makes harvesting
+// and construction feel weighty rather than instant.
+const WORK_SCALE = 10;
 // Fruit picked in a single gather (non-destructive; leaves the tree standing).
 const FRUIT_YIELD: Record<string, number> = { fruit: 3 };
 
@@ -119,15 +123,15 @@ export function isBuildable(world: World, x: number, y: number): boolean {
 function rollObject(terrain: TerrainType, rnd: () => number): WorldObject | undefined {
   if (terrain === 'grass') {
     if (rnd() < 0.1) {
-      return { kind: 'tree', type: pick(TREE_TYPES, rnd), hasFruit: rnd() < 0.3, hp: 5 };
+      return { kind: 'tree', type: pick(TREE_TYPES, rnd), hasFruit: rnd() < 0.3, hp: 5 * WORK_SCALE };
     }
     if (rnd() < 0.02) {
-      return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: 4 };
+      return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: 4 * WORK_SCALE };
     }
   } else if (terrain === 'stone') {
     const r = rnd();
-    if (r < 0.25) return { kind: 'ore', type: pick(ORE_TYPES, rnd), hp: 8 };
-    if (r < 0.6) return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: 4 };
+    if (r < 0.25) return { kind: 'ore', type: pick(ORE_TYPES, rnd), hp: 8 * WORK_SCALE };
+    if (r < 0.6) return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: 4 * WORK_SCALE };
   }
   return undefined;
 }
@@ -184,7 +188,7 @@ export function applyAction(world: World, action: Action): void {
       if (!canAfford(unit, recipe.inputs)) return;
       deductInputs(unit, recipe.inputs); // reserve the cost up front
       clearJobs(unit);
-      unit.craftJob = { recipe: action.recipe, remaining: recipe.workTicks };
+      unit.craftJob = { recipe: action.recipe, remaining: recipe.workTicks * WORK_SCALE };
       return;
     }
     case 'build': {
@@ -199,7 +203,7 @@ export function applyAction(world: World, action: Action): void {
       clearJobs(unit);
       unit.path = path;
       unit.moveCooldown = 0;
-      unit.buildJob = { building: action.building, at: { ...action.at }, remaining: def.workTicks };
+      unit.buildJob = { building: action.building, at: { ...action.at }, remaining: def.workTicks * WORK_SCALE };
       return;
     }
   }

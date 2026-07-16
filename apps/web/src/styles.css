@@ -156,7 +156,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
  * stays faintly readable (stale memory); never-seen ground is near-black. Fill
  * is a fixed black so it darkens regardless of theme; pointer-events off so the
  * veil never intercepts map clicks. */
-#fog rect { pointer-events: none; }
+#fog rect { pointer-events: none; shape-rendering: crispEdges; }
 .fog-dim { fill: rgba(0, 0, 0, 0.5); }
 .fog-unseen { fill: rgba(0, 0, 0, 0.86); }
 
