@@ -13,7 +13,6 @@ import {
   RECIPE_IDS,
   TERRAIN_COLORS,
   isBuildable,
-  isWalkable,
   tileAt,
 } from '@game/shared';
 import type { Unit, World } from '@game/shared';
@@ -477,7 +476,11 @@ function handleClick(e: PointerEvent, container: HTMLElement, view: View): void 
   const tile = tileAt(world, x, y);
   if (tile?.object) {
     sendAction({ type: 'harvest', unitId: selId, target: { x, y } });
-  } else if (isWalkable(world, x, y)) {
+  } else {
+    // Any other tile — walkable, water, or still under fog — issues a
+    // best-effort move. We deliberately DON'T pre-check walkability here: a
+    // refused click would reveal hidden terrain. The unit heads over and only
+    // discovers blockers via its own vision (see stepTravel in sim).
     sendAction({ type: 'move', unitId: selId, to: { x, y } });
   }
 }

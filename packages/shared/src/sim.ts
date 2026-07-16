@@ -19,6 +19,7 @@ import {
 } from './registry/recipes.js';
 import { tileAt } from './types.js';
 import type { Coord, Tile, TerrainType, Unit, World, WorldObject, WorldSettings } from './types.js';
+import { visibleTiles } from './vision.js';
 
 const MIN_DIM = 8;
 const MAX_DIM = 120;
@@ -33,6 +34,41 @@ const UNIT_STEP_TICKS = 2;
 const WORK_SCALE = 10;
 // Fruit picked in a single gather (non-destructive; leaves the tree standing).
 const FRUIT_YIELD: Record<string, number> = { fruit: 3 };
+
+// Cumulative "terrain the colony has ever seen", per world, kept OUT of the
+// serialized World (it must never reach clients or the wire). A bit per tile;
+// 1 = seen at least once. Travel planning trusts real walkability only on seen
+// tiles and optimistically assumes unseen tiles are passable — that's what lets
+// a unit walk toward an unknown spot and only discover blockers as it goes.
+const exploredMemory = new WeakMap<World, Uint8Array>();
+
+function exploredFor(world: World): Uint8Array {
+  let e = exploredMemory.get(world);
+  if (!e) {
+    e = new Uint8Array(world.width * world.height);
+    exploredMemory.set(world, e);
+  }
+  return e;
+}
+
+/** Union the colony's current sight into its cumulative terrain memory. */
+function growExplored(world: World): void {
+  const e = exploredFor(world);
+  for (const key of visibleTiles(world)) {
+    const comma = key.indexOf(',');
+    const x = +key.slice(0, comma);
+    const y = +key.slice(comma + 1);
+    e[y * world.width + x] = 1;
+  }
+}
+
+/** True only when the tile is out of bounds, or the colony has SEEN it and knows
+ *  it can't be walked. Unseen tiles return false — optimistically passable. */
+function knownBlocked(world: World, x: number, y: number): boolean {
+  if (x < 0 || y < 0 || x >= world.width || y >= world.height) return true;
+  const e = exploredFor(world);
+  return e[y * world.width + x] === 1 && !isWalkable(world, x, y);
+}
 
 /** Clamp user-supplied settings into a sane, renderable range. */
 export function normalizeSettings(s: WorldSettings): WorldSettings {
@@ -144,6 +180,9 @@ function rollObject(terrain: TerrainType, rnd: () => number): WorldObject | unde
  */
 export function tick(world: World): void {
   world.tick++;
+  // Fold everything the colony can currently see into its cumulative terrain
+  // memory BEFORE moving, so travel decisions this tick use up-to-date sight.
+  growExplored(world);
   for (const id in world.units) stepUnit(world, world.units[id]!);
 }
 
@@ -157,11 +196,13 @@ export function applyAction(world: World, action: Action): void {
   switch (action.type) {
     case 'move': {
       const { x, y } = action.to;
-      if (!isWalkable(world, x, y)) return;
-      const path = bfsPath(world, unit.pos, (cx, cy) => cx === x && cy === y);
-      if (!path) return;
+      if (x < 0 || y < 0 || x >= world.width || y >= world.height) return;
+      // No walkability / reachability gate: we accept ANY in-bounds tile so a
+      // click never reveals hidden terrain by being silently refused. The unit
+      // sets off toward it and works out en route (via its own vision) whether
+      // it can actually arrive — see stepTravel.
       clearJobs(unit);
-      unit.path = path;
+      unit.moveGoal = { x, y };
       unit.moveCooldown = 0;
       return;
     }
@@ -216,6 +257,7 @@ function clearJobs(unit: Unit): void {
   unit.craftJob = undefined;
   unit.buildJob = undefined;
   unit.path = undefined;
+  unit.moveGoal = undefined;
 }
 
 function canAfford(unit: Unit, cost: Record<string, number>): boolean {
@@ -233,6 +275,12 @@ function deductInputs(unit: Unit, cost: Record<string, number>): void {
 }
 
 function stepUnit(world: World, unit: Unit): void {
+  // Best-effort travel toward a clicked destination (fog-aware, may give up).
+  if (unit.moveGoal) {
+    stepTravel(world, unit);
+    return;
+  }
+
   // Walking takes priority: one tile per UNIT_STEP_TICKS ticks.
   if (unit.path && unit.path.length > 0) {
     unit.moveCooldown = (unit.moveCooldown ?? 0) - 1;
@@ -426,6 +474,95 @@ function bfsPath(
 
   const path: Coord[] = [];
   for (let cur = goalIdx; cur !== startIdx; cur = prev[cur]!) {
+    path.push({ x: cur % w, y: (cur / w) | 0 });
+  }
+  path.reverse();
+  return path;
+}
+
+/** One tick of best-effort travel toward unit.moveGoal. Follows an optimistic
+ *  path (unseen tiles assumed passable), replanning the moment a step turns out
+ *  to be known-blocked, and giving up once nothing reachable gets any closer to
+ *  the goal — i.e. the colony has now seen enough to know it can't get there. */
+function stepTravel(world: World, unit: Unit): void {
+  const goal = unit.moveGoal!;
+  if (unit.pos.x === goal.x && unit.pos.y === goal.y) {
+    unit.moveGoal = undefined;
+    unit.path = undefined;
+    return;
+  }
+
+  // (Re)plan when we have no path, finished one, or the next step is now known
+  // to be blocked (a barrier we've just laid eyes on).
+  const next = unit.path?.[0];
+  if (!unit.path || unit.path.length === 0 || (next && knownBlocked(world, next.x, next.y))) {
+    const path = planTravel(world, unit.pos, goal);
+    if (!path) {
+      unit.moveGoal = undefined; // nothing reachable is nearer → give up
+      unit.path = undefined;
+      return;
+    }
+    unit.path = path;
+    unit.moveCooldown = 0;
+  }
+
+  unit.moveCooldown = (unit.moveCooldown ?? 0) - 1;
+  if (unit.moveCooldown <= 0) {
+    const step = unit.path![0]!;
+    if (knownBlocked(world, step.x, step.y)) {
+      unit.path = undefined; // discovered blocked this tick; replan next tick
+      unit.moveCooldown = 0;
+      return;
+    }
+    unit.path!.shift();
+    unit.pos = step;
+    unit.moveCooldown = UNIT_STEP_TICKS;
+  }
+}
+
+/** Optimistic BFS: shortest path to the reachable tile CLOSEST (Manhattan) to
+ *  the goal, treating unseen tiles as passable and only known-blocked tiles as
+ *  walls. Returns null when no reachable tile is nearer than `start` — the
+ *  caller reads that as "can't make progress, give up". */
+function planTravel(world: World, start: Coord, goal: Coord): Coord[] | null {
+  const w = world.width;
+  const h = world.height;
+  const startIdx = start.y * w + start.x;
+  const visited = new Uint8Array(w * h);
+  const prev = new Int32Array(w * h).fill(-1);
+  const queue = [startIdx];
+  visited[startIdx] = 1;
+
+  const distTo = (idx: number): number =>
+    Math.abs((idx % w) - goal.x) + Math.abs(((idx / w) | 0) - goal.y);
+
+  let bestIdx = startIdx;
+  let bestDist = distTo(startIdx);
+
+  for (let head = 0; head < queue.length; head++) {
+    const idx = queue[head]!;
+    const x = idx % w;
+    const y = (idx / w) | 0;
+    for (const [dx, dy] of BFS_DIRS) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      const nidx = ny * w + nx;
+      if (visited[nidx] || knownBlocked(world, nx, ny)) continue;
+      visited[nidx] = 1;
+      prev[nidx] = idx;
+      const d = distTo(nidx);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = nidx;
+      }
+      queue.push(nidx);
+    }
+  }
+
+  if (bestIdx === startIdx) return null;
+  const path: Coord[] = [];
+  for (let cur = bestIdx; cur !== startIdx; cur = prev[cur]!) {
     path.push({ x: cur % w, y: (cur / w) | 0 });
   }
   path.reverse();

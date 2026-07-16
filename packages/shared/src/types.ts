@@ -62,6 +62,11 @@ export interface Unit {
   visionRadius?: number;
   /** Remaining tiles to walk (BFS result), excluding the current pos. */
   path?: Coord[];
+  /** A best-effort travel destination from a plain move command. The unit heads
+   *  here using only terrain it has seen (fog-aware), routing around known
+   *  obstacles and giving up once nothing reachable gets any closer. Cleared on
+   *  arrival, on giving up, or when another job replaces it. */
+  moveGoal?: Coord;
   /** Ticks remaining until the next walk step (movement cadence). */
   moveCooldown?: number;
   /** Work to perform on arrival; cleared when the job finishes or is replaced. */
