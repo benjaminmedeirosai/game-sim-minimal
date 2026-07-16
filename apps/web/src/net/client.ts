@@ -105,7 +105,10 @@ function handleHostMsg(msg: HostMsg): void {
       net.set({ roster: msg.roster });
       break;
     case 'snapshot':
-      recordSnapshot();
+      // Approximate the uncompressed wire payload: JSON is ASCII-dominant here,
+      // so string length ≈ byte count. This is the whole world sent every tick,
+      // so it's what a compression/delta pass would target first.
+      recordSnapshot(JSON.stringify(msg).length);
       onSnapshot(msg.world);
       actionLog.set(() => msg.actionLog); // replace (updater form: array, not a merge)
       break;

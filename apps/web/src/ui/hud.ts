@@ -22,6 +22,8 @@ function renderClient(cp: ClientPerfState): string {
   const rows: [string, string][] = [
     ['fps', round(cp.fps).toString()],
     ['snapshots', `${round(cp.snapshotsPerSec)} /s`],
+    ['snapshot size', cp.snapshotKB !== undefined ? `${round(cp.snapshotKB)} KB` : 'n/a'],
+    ['wire (uncompressed)', cp.wireKBps !== undefined ? `${round(cp.wireKBps)} KB/s` : 'n/a'],
     ['heap', cp.heapMB !== undefined ? `${round(cp.heapMB)} MB` : 'n/a'],
   ];
   return `
