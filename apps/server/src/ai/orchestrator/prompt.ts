@@ -71,8 +71,12 @@ export function systemPrompt(): string {
     '  {"type":"craft","unitId":"<id>","recipe":"<id>"}',
     '  {"type":"build","unitId":"<id>","building":"<id>","at":{"x":<int>,"y":<int>}}',
     '',
-    'harvest works the object on the target tile (chop tree / mine rock or ore /',
-    'gather fruit); the verb is inferred from what is there.',
+    'harvest works the object on the target tile; the verb is inferred from what',
+    'is there:',
+    '  - a "fruit tree" is GATHERED for fruit (food) and stays standing;',
+    '  - a plain "tree" is CHOPPED for wood (removed);',
+    '  - rock and ore are MINED.',
+    'So harvest a fruit tree for food, a plain tree for wood.',
     '',
     'Recipes (craft):',
     recipeLines(),
@@ -118,12 +122,21 @@ export function worldContext(world: World): string {
     return `  ${u.id} at (${u.pos.x},${u.pos.y}) inv[${inv}] tools[${tools}] ${busy}`;
   });
 
-  const coords: Record<string, string[]> = { tree: [], rock: [], ore: [] };
+  // Fruit trees are split out from plain trees: harvesting a fruit tree GATHERS
+  // its fruit (the tree stays), while harvesting a bare tree CHOPS it for wood.
+  // The AI needs to know which is which to satisfy "get food" vs "get wood".
+  const coords: Record<string, string[]> = {
+    'fruit tree': [],
+    tree: [],
+    rock: [],
+    ore: [],
+  };
   for (let y = 0; y < world.height; y++) {
     for (let x = 0; x < world.width; x++) {
       const obj = world.tiles[y * world.width + x]?.object;
       if (!obj) continue;
-      coords[obj.kind]?.push(`(${x},${y})`);
+      const key = obj.kind === 'tree' && obj.hasFruit ? 'fruit tree' : obj.kind;
+      coords[key]?.push(`(${x},${y})`);
     }
   }
   const resources = Object.keys(coords).map(
