@@ -18,8 +18,9 @@ export { ORCHESTRATOR_AGENT };
 
 // The tuning for orchestrator calls, in one place so the request and the
 // Config-tab display can't disagree: deterministic (temperature 0) for
-// obedient, low-variance action lists.
-const ORCHESTRATOR_OPTS: ChatOptions = { temperature: 0 };
+// obedient, low-variance action lists, and thinking OFF — gemma reasons on
+// every call otherwise, ~28× slower for no gain on these short prompts.
+const ORCHESTRATOR_OPTS: ChatOptions = { temperature: 0, think: false };
 
 export interface RunResult {
   actions: Action[];

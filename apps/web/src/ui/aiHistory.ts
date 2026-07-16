@@ -119,9 +119,15 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   // the verbatim options object (temperature today, more later).
   function settingsCard(config: AiConfigView): string {
     const s = config.settings;
+    // Thinking gets a "!" note: it's off for speed, and if it's ever turned
+    // back on we'll need to capture message.thinking to actually show it.
+    const thinkNote = s.think
+      ? ''
+      : `<span class="ai-note" title="Thinking is disabled for speed (this model reasons on every call otherwise, ~28× slower). If re-enabled, capture the response's thinking text to display the model's reasoning here.">!</span>`;
     const rows: string[] = [
       `<div class="ai-set"><span>model</span><code>${esc(s.model)}</code></div>`,
       `<div class="ai-set"><span>keep-alive</span><code>${esc(s.keepAlive)}</code></div>`,
+      `<div class="ai-set"><span>thinking</span><code>${s.think ? 'on' : 'off'}${thinkNote}</code></div>`,
     ];
     for (const [k, v] of Object.entries(s.options)) {
       rows.push(`<div class="ai-set"><span>${esc(k)}</span><code>${esc(String(v))}</code></div>`);

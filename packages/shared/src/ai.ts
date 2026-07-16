@@ -71,6 +71,10 @@ export interface AiSettings {
   model: string;
   /** How long the backend keeps the model resident between calls. */
   keepAlive: string;
+  /** Whether the model's chain-of-thought is enabled. Off by default — see the
+   *  note in the Config UI: if turned on, the response's thinking text must be
+   *  captured to be shown. */
+  think: boolean;
   /** The verbatim `options` payload sent per request. */
   options: Record<string, unknown>;
 }

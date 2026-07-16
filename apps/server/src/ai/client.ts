@@ -22,10 +22,16 @@ const KEEP_ALIVE = '60m';
 export interface ChatOptions {
   /** 0 = deterministic. We want obedient, low-variance action lists. */
   temperature?: number;
+  /** Enable the model's chain-of-thought. Defaults to false: thinking-capable
+   *  models (gemma among them) otherwise reason on every call, which costs
+   *  ~28× the latency for no benefit on our short action-planning prompts. If
+   *  ever turned on, capture `message.thinking` from the response to show it. */
+  think?: boolean;
 }
 
 /** The verbatim `options` object we send the daemon for a given call — the
- *  single source of truth for both the request and the Config-tab display. */
+ *  single source of truth for both the request and the Config-tab display.
+ *  (`think` is a top-level /api/chat field, not an option, so it's separate.) */
 function requestOptions(opts: ChatOptions): Record<string, unknown> {
   return { temperature: opts.temperature ?? 0 };
 }
@@ -33,7 +39,12 @@ function requestOptions(opts: ChatOptions): Record<string, unknown> {
 /** The tuning knobs currently in effect, for the Config tab. Mirrors exactly
  *  what rawChat() sends so the view can never drift from reality. */
 export function chatSettings(opts: ChatOptions = {}): AiSettings {
-  return { model: MODEL, keepAlive: KEEP_ALIVE, options: requestOptions(opts) };
+  return {
+    model: MODEL,
+    keepAlive: KEEP_ALIVE,
+    think: opts.think ?? false,
+    options: requestOptions(opts),
+  };
 }
 
 /** Ollama's non-streaming /api/chat response, incl. the telemetry fields we
@@ -165,6 +176,7 @@ class OllamaClient {
         messages,
         stream: false,
         keep_alive: KEEP_ALIVE,
+        think: opts.think ?? false,
         options: requestOptions(opts),
       }),
     });
