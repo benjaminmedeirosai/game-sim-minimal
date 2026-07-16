@@ -8,6 +8,7 @@ import {
   STATS_INTERVAL_MS,
   TickStats,
   applyAction,
+  fogWorld,
   generateWorld,
   normalizeSettings,
   tick,
@@ -76,7 +77,9 @@ export class Host {
   /** The message a freshly-connected peer needs to render the world, including
    *  the recent action tail for the Actions panel. */
   snapshotMsg(): HostMsg {
-    return { m: 'snapshot', world: this.world, actionLog: this.actionLog };
+    // Ship the fogged view: objects outside the colony's vision are withheld,
+    // so a client can only render (and remember) what its units have seen.
+    return { m: 'snapshot', world: fogWorld(this.world), actionLog: this.actionLog };
   }
 
   /** Apply a validated command from a UI or the AI, recording who submitted it.
@@ -127,7 +130,7 @@ export class Host {
       command: text,
       submitter: onBehalfOf,
       context: () => ({
-        world: this.world,
+        world: fogWorld(this.world), // the AI plans over only what units can see
         roster,
         history: this.recentConversation(),
       }),
@@ -174,7 +177,7 @@ export class Host {
       agent,
       agents: [ORCHESTRATOR_AGENT],
       exchanges: this.aiHistory.get(agent) ?? [],
-      config: orchestratorConfig(this.world),
+      config: orchestratorConfig(fogWorld(this.world)), // preview matches what the AI actually sees
       pending: this.aiPending.get(agent) ?? [],
     };
   }

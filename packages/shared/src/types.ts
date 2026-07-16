@@ -58,6 +58,8 @@ export interface Unit {
   inventory: Record<string, number>;
   /** Tools the unit is carrying (gate/speed harvesting; see HARVEST_RULES). */
   tools: string[];
+  /** How far this unit sees, in tiles. Absent → DEFAULT_VISION_RADIUS. */
+  visionRadius?: number;
   /** Remaining tiles to walk (BFS result), excluding the current pos. */
   path?: Coord[];
   /** Ticks remaining until the next walk step (movement cadence). */

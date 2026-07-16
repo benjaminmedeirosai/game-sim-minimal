@@ -22,6 +22,7 @@ import { camera, game } from '../state/game';
 import { selection } from '../state/selection';
 import { setActive } from '../state/activeSurface';
 import { recordDraw } from '../state/clientPerf';
+import { isExplored, isVisible, rememberedObject, resetFog, updateFog } from '../state/fog';
 import { pointerTile } from '../state/pointer';
 import { closeLayer, openLayer } from '../ui/escStack';
 import { buildingSvg, objectSvg, unitSvg } from './sprites';
@@ -41,9 +42,14 @@ export function mountWorld(container: HTMLElement): void {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', 'world-svg');
   svg.setAttribute('preserveAspectRatio', 'xMidYMid slice');
-  svg.innerHTML = `<g id="terrain"></g><g id="dyn"></g>`;
+  // Layer order (bottom→top): terrain, remembered objects (stale memory), the
+  // fog overlay (which dims everything beneath it), then the live dynamic layer
+  // — visible objects/units sit above the fog, so they stay full-brightness.
+  svg.innerHTML = `<g id="terrain"></g><g id="remembered"></g><g id="fog"></g><g id="dyn"></g>`;
   container.appendChild(svg);
   const terrainG = svg.querySelector<SVGGElement>('#terrain')!;
+  const rememberedG = svg.querySelector<SVGGElement>('#remembered')!;
+  const fogG = svg.querySelector<SVGGElement>('#fog')!;
   const dynG = svg.querySelector<SVGGElement>('#dyn')!;
 
   const info = document.createElement('div');
@@ -94,7 +100,11 @@ export function mountWorld(container: HTMLElement): void {
       needTerrain = false;
     }
     if (needDyn) {
+      // Fog and remembered objects track the vision set, which moves with the
+      // units every snapshot — so they rebuild whenever the dynamic layer does.
+      rememberedG.innerHTML = buildRemembered(range);
       dynG.innerHTML = buildDyn(world, range, selection.get().unitId);
+      fogG.innerHTML = buildFog(range);
       needDyn = false;
     }
     recordDraw(performance.now() - t0);
@@ -105,7 +115,11 @@ export function mountWorld(container: HTMLElement): void {
   game.subscribe(() => {
     const world = game.get().world;
     const newWorld = world && world.id !== lastWorldId;
-    if (newWorld) lastWorldId = world!.id;
+    if (newWorld) {
+      lastWorldId = world!.id;
+      resetFog(); // a fresh world is fully undiscovered again
+    }
+    if (world) updateFog(world); // fold this snapshot into the client's map memory
     schedule(!!newWorld, true);
     updateInfo(info);
   });
@@ -162,6 +176,37 @@ function buildTerrain(world: World, r: CullRange): string {
       const color = TERRAIN_COLORS[tile.terrain] ?? '#000';
       // 1.02 overlap hides hairline seams between rects at fractional zooms.
       parts.push(`<rect x="${x}" y="${y}" width="1.02" height="1.02" fill="${color}"/>`);
+    }
+  }
+  return parts.join('');
+}
+
+// Objects drawn from memory: tiles we've explored but can't see right now. The
+// fog overlay above darkens them, so they read as a faded recollection. Skip
+// tiles that are currently visible — those are drawn live in the dyn layer.
+function buildRemembered(r: CullRange): string {
+  const parts: string[] = [];
+  for (let y = r.y0; y <= r.y1; y++) {
+    for (let x = r.x0; x <= r.x1; x++) {
+      if (isVisible(x, y)) continue;
+      const obj = rememberedObject(x, y);
+      if (obj) parts.push(`<g transform="translate(${x} ${y})">${objectSvg(obj)}</g>`);
+    }
+  }
+  return parts.join('');
+}
+
+// Semi-transparent rects over every non-visible tile: a light veil on explored
+// ground, a heavy one on never-seen ground. Visible tiles get no rect, so they
+// show through at full brightness.
+function buildFog(r: CullRange): string {
+  const parts: string[] = [];
+  for (let y = r.y0; y <= r.y1; y++) {
+    for (let x = r.x0; x <= r.x1; x++) {
+      if (isVisible(x, y)) continue;
+      const cls = isExplored(x, y) ? 'fog-dim' : 'fog-unseen';
+      // 1.02 overlap matches the terrain rects so the veil has no seams.
+      parts.push(`<rect class="${cls}" x="${x}" y="${y}" width="1.02" height="1.02"/>`);
     }
   }
   return parts.join('');

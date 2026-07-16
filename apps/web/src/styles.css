@@ -152,6 +152,14 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .world-svg.grabbing { cursor: grabbing; }
 .world.placing .world-svg { cursor: crosshair; }
 
+/* Fog of war: a veil over tiles the colony can't currently see. Explored ground
+ * stays faintly readable (stale memory); never-seen ground is near-black. Fill
+ * is a fixed black so it darkens regardless of theme; pointer-events off so the
+ * veil never intercepts map clicks. */
+#fog rect { pointer-events: none; }
+.fog-dim { fill: rgba(0, 0, 0, 0.5); }
+.fog-unseen { fill: rgba(0, 0, 0, 0.86); }
+
 /* ---- selected-unit overlay (bottom-left of the world) ---- */
 .sel-info {
   position: absolute; left: 14px; bottom: 14px; z-index: 3;
