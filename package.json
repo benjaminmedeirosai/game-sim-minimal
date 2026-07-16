@@ -10,6 +10,7 @@
     "dev:server": "npm run dev -w @game/server",
     "dev:web": "npm run dev -w @game/web",
     "dev": "concurrently -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
+    "build": "npm run build -w @game/web",
     "typecheck": "tsc --noEmit -p apps/web && tsc --noEmit -p apps/server"
   },
   "devDependencies": {
