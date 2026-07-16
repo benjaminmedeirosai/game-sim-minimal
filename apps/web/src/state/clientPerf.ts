@@ -11,6 +11,10 @@ export interface ClientPerfState {
   snapshotsPerSec: number;
   /** Used JS heap in MB, if the browser exposes performance.memory. */
   heapMB?: number;
+  /** Mean time spent rebuilding the SVG per redraw this window, in ms. */
+  drawMsAvg?: number;
+  /** Worst single redraw this window, in ms — the read on "close to budget". */
+  drawMsPeak?: number;
   /** Serialized size of the most recent snapshot, in KB. The host broadcasts
    *  the whole world each tick with no compression, so this is the raw
    *  per-message payload — watch it grow as the world does. */
@@ -28,8 +32,21 @@ let frames = 0;
 let snapshots = 0;
 let bytesThisWindow = 0;
 let lastSnapshotBytes = 0;
+let draws = 0;
+let drawMsSum = 0;
+let drawMsPeak = 0;
 let windowStart = 0;
 let started = false;
+
+/** Record one SVG redraw's duration (ms), measured around the renderer's
+ *  innerHTML rebuild. Redraws only happen on snapshots / view changes, not
+ *  every frame, so we track the window's mean and worst case rather than a
+ *  per-frame rate. */
+export function recordDraw(ms: number): void {
+  draws++;
+  drawMsSum += ms;
+  if (ms > drawMsPeak) drawMsPeak = ms;
+}
 
 /** Count one applied host snapshot (called from the net client on each one),
  *  along with its serialized byte size so the Perf dialog can show payload
@@ -70,10 +87,15 @@ export function startClientPerf(): void {
         heapMB: mem ? mem.usedJSHeapSize / 1_048_576 : undefined,
         snapshotKB: lastSnapshotBytes ? lastSnapshotBytes / 1024 : undefined,
         wireKBps: bytesThisWindow ? bytesThisWindow / 1024 / (elapsed / 1000) : undefined,
+        drawMsAvg: draws ? drawMsSum / draws : undefined,
+        drawMsPeak: draws ? drawMsPeak : undefined,
       });
       frames = 0;
       snapshots = 0;
       bytesThisWindow = 0;
+      draws = 0;
+      drawMsSum = 0;
+      drawMsPeak = 0;
       windowStart = now;
     }
     requestAnimationFrame(loop);

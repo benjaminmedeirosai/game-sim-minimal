@@ -21,6 +21,7 @@ import { sendAction } from '../net/client';
 import { camera, game } from '../state/game';
 import { selection } from '../state/selection';
 import { setActive } from '../state/activeSurface';
+import { recordDraw } from '../state/clientPerf';
 import { pointerTile } from '../state/pointer';
 import { closeLayer, openLayer } from '../ui/escStack';
 import { buildingSvg, objectSvg, unitSvg } from './sprites';
@@ -81,6 +82,12 @@ export function mountWorld(container: HTMLElement): void {
     view.top = cam.cy - view.viewH / 2;
     svg.setAttribute('viewBox', `${view.left} ${view.top} ${view.viewW} ${view.viewH}`);
 
+    if (!needTerrain && !needDyn) return;
+
+    // Time the SVG rebuild (string build + innerHTML parse) — the main-thread
+    // work a redraw actually costs, so the Perf dialog can show it against the
+    // frame budget. Excludes browser layout/paint, which we can't observe here.
+    const t0 = performance.now();
     const range = cullRange(world, view);
     if (needTerrain) {
       terrainG.innerHTML = buildTerrain(world, range);
@@ -90,6 +97,7 @@ export function mountWorld(container: HTMLElement): void {
       dynG.innerHTML = buildDyn(world, range, selection.get().unitId);
       needDyn = false;
     }
+    recordDraw(performance.now() - t0);
   };
 
   // A snapshot only changes objects/units → dyn layer; a NEW world (id change)

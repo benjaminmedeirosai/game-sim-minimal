@@ -25,12 +25,26 @@ function grid(rows: [string, string][]): string {
     .join('')}</div>`;
 }
 
+// The 60fps frame budget: rAF caps fps here, so a redraw's ms vs this number is
+// the real headroom signal. Peak past ~70% of it means redraws risk dropping
+// frames on a slower window.
+const FRAME_BUDGET_MS = 1000 / 60;
+
 function renderClient(cp: ClientPerfState): string {
-  const rows: [string, string][] = [
+  const near = cp.drawMsPeak !== undefined && cp.drawMsPeak > FRAME_BUDGET_MS * 0.7;
+  const rows: [string, string, boolean?][] = [
     ['fps', round(cp.fps).toString()],
     ['heap', cp.heapMB !== undefined ? `${round(cp.heapMB)} MB` : 'n/a'],
+    ['draw budget', `${round(FRAME_BUDGET_MS)} ms`],
+    ['draw avg', cp.drawMsAvg !== undefined ? `${round(cp.drawMsAvg)} ms` : 'n/a'],
+    ['draw peak', cp.drawMsPeak !== undefined ? `${round(cp.drawMsPeak)} ms` : 'n/a', near],
   ];
-  return `<h2 class="mt">Client</h2>${grid(rows)}`;
+  return `<h2 class="mt">Client</h2><div class="hud-grid">${rows
+    .map(
+      ([k, v, warn]) =>
+        `<div class="hud-k">${k}</div><div class="hud-v${warn ? ' warn' : ''}">${v}</div>`,
+    )
+    .join('')}</div>`;
 }
 
 function renderNetwork(cp: ClientPerfState): string {
