@@ -29,7 +29,10 @@ export type ClientMsg =
   // A natural-language command for the AI orchestrator to turn into actions.
   | { m: 'command'; text: string }
   // Ask the host for an agent's full history + current prompt config.
-  | { m: 'aiHistoryReq'; agent: string };
+  | { m: 'aiHistoryReq'; agent: string }
+  // Round-trip latency probe: `t` is the client's own send time, echoed back
+  // in `pong` so the client can measure RTT without any host/client clock sync.
+  | { m: 'ping'; t: number };
 
 /** Messages the host sends TO peers. */
 export type HostMsg =
@@ -52,4 +55,6 @@ export type HostMsg =
     }
   // A lightweight nudge that a new exchange was recorded, so an open history
   // window can refetch. Kept payload-free to stay cheap on the broadcast path.
-  | { m: 'aiEvent'; agent: string };
+  | { m: 'aiEvent'; agent: string }
+  // Reply to a client `ping`, echoing back its send time `t` unchanged.
+  | { m: 'pong'; t: number };

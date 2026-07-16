@@ -17,6 +17,8 @@ export interface ClientPerfState {
   snapshotKB?: number;
   /** Uncompressed wire throughput from snapshots, in KB/s (size × rate). */
   wireKBps?: number;
+  /** Round-trip time to the host in ms (ping→pong), smoothed. */
+  latencyMS?: number;
 }
 
 export const clientPerf = new Store<ClientPerfState>({ fps: 0, snapshotsPerSec: 0 });
@@ -36,6 +38,14 @@ export function recordSnapshot(bytes = 0): void {
   snapshots++;
   bytesThisWindow += bytes;
   if (bytes) lastSnapshotBytes = bytes;
+}
+
+// Exponential moving average so a single jittery round-trip doesn't make the
+// number jump around; published straight to the store (not window-batched).
+let latencyEma = 0;
+export function recordLatency(rttMS: number): void {
+  latencyEma = latencyEma ? latencyEma * 0.7 + rttMS * 0.3 : rttMS;
+  clientPerf.set({ latencyMS: latencyEma });
 }
 
 // Chrome-only, non-standard; typed narrowly so we don't lean on `any` elsewhere.

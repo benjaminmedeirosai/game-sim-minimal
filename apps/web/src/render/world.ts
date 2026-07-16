@@ -21,6 +21,7 @@ import { sendAction } from '../net/client';
 import { camera, game } from '../state/game';
 import { selection } from '../state/selection';
 import { setActive } from '../state/activeSurface';
+import { pointerTile } from '../state/pointer';
 import { closeLayer, openLayer } from '../ui/escStack';
 import { buildingSvg, objectSvg, unitSvg } from './sprites';
 import { clampTilesAcross, refreshViewportInfo, setViewportContainer, wheelZoom } from './viewport';
@@ -289,6 +290,29 @@ function attachControls(svg: SVGSVGElement, container: HTMLElement, view: View):
     },
     { passive: false },
   );
+
+  // Track the tile under the cursor for the topbar mouse-coordinate readout.
+  // Dedup on tile so we only publish when the hovered tile actually changes.
+  container.addEventListener('pointermove', (e) => {
+    const world = game.get().world;
+    const cur = pointerTile.get().tile;
+    if (!world) {
+      if (cur) pointerTile.set({ tile: null });
+      return;
+    }
+    const rect = container.getBoundingClientRect();
+    const x = Math.floor(view.left + ((e.clientX - rect.left) / rect.width) * view.viewW);
+    const y = Math.floor(view.top + ((e.clientY - rect.top) / rect.height) * view.viewH);
+    const inBounds = x >= 0 && y >= 0 && x < world.width && y < world.height;
+    if (!inBounds) {
+      if (cur) pointerTile.set({ tile: null });
+    } else if (!cur || cur.x !== x || cur.y !== y) {
+      pointerTile.set({ tile: { x, y } });
+    }
+  });
+  container.addEventListener('pointerleave', () => {
+    if (pointerTile.get().tile) pointerTile.set({ tile: null });
+  });
 
   // A gesture is a pan once it moves past a small threshold; otherwise it's a
   // click (select a unit, or command the selected unit).

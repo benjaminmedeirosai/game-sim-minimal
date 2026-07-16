@@ -15,6 +15,7 @@ import { closeLayer, installEscStack, openLayer } from './escStack';
 import { mountConnGate } from './connGate';
 import { installMapKeys } from './mapKeys';
 import { setActive } from '../state/activeSurface';
+import { pointerTile } from '../state/pointer';
 import { settings } from '../state/settings';
 import { startClientPerf } from '../state/clientPerf';
 
@@ -36,6 +37,7 @@ export function mountApp(root: HTMLElement): void {
           <div id="speed" class="speed"></div>
           <div id="zoomctl"></div>
           <span class="coord-badge" id="coord-badge" title="Camera center tile (x, y)"></span>
+          <span class="coord-badge coord-mouse" id="mouse-badge" title="Tile under the cursor (x, y)"></span>
         </div>
       </header>
       <div class="stage">
@@ -135,11 +137,17 @@ export function mountApp(root: HTMLElement): void {
   const syncCoord = (): void => {
     const c = camera.get();
     coordBadge.textContent = game.get().world
-      ? `x ${Math.floor(c.cx)}  y ${Math.floor(c.cy)}`
+      ? `◎ ${Math.floor(c.cx)}, ${Math.floor(c.cy)}`
       : '';
   };
   camera.subscribe(syncCoord);
   game.subscribe(syncCoord);
+
+  // Live tile under the mouse cursor (blank when off the map).
+  const mouseBadge = root.querySelector<HTMLElement>('#mouse-badge')!;
+  pointerTile.subscribe((p) => {
+    mouseBadge.textContent = p.tile ? `↖ ${p.tile.x}, ${p.tile.y}` : '';
+  });
 
   const name = `Player-${Math.floor(Math.random() * 1000)}`;
   connect(name);

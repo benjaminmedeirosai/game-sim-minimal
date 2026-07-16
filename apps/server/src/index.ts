@@ -160,6 +160,8 @@ peer.on('connection', (conn) => {
       void host.runCommand(msg.text, playerSource(conn.peer), players);
     } else if (msg.m === 'aiHistoryReq') {
       safeSend(conn, host.aiHistoryMsg(msg.agent));
+    } else if (msg.m === 'ping') {
+      safeSend(conn, { m: 'pong', t: msg.t }); // echo for RTT measurement
     }
   });
 

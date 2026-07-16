@@ -18,7 +18,7 @@ import type {
 } from '@game/shared';
 import { camera, game } from '../state/game';
 import { clampTilesAcross, refreshViewportInfo } from '../render/viewport';
-import { recordSnapshot } from '../state/clientPerf';
+import { recordLatency, recordSnapshot } from '../state/clientPerf';
 
 export interface NetState {
   status: 'connecting' | 'connected' | 'error';
@@ -50,6 +50,21 @@ let conn: DataConnection | undefined;
 let peer: Peer | undefined;
 let clientName = '';
 let lastWorldId: string | undefined;
+let pingTimer: ReturnType<typeof setInterval> | undefined;
+
+const PING_INTERVAL_MS = 2000;
+
+function startPinging(): void {
+  stopPinging();
+  const ping = (): void => send({ m: 'ping', t: Date.now() });
+  ping(); // measure immediately, then on an interval
+  pingTimer = setInterval(ping, PING_INTERVAL_MS);
+}
+
+function stopPinging(): void {
+  if (pingTimer) clearInterval(pingTimer);
+  pingTimer = undefined;
+}
 
 /** Re-run the last connection attempt (used by the "Retry" button on the
  *  connection gate). No-op before the first connect(). */
@@ -77,11 +92,13 @@ export function connect(name: string): void {
       // Pull the shared chat immediately so the sidebar has it without anyone
       // opening the AI History window first.
       sendAiHistoryReq(ORCHESTRATOR_AGENT);
+      startPinging(); // begin RTT latency probes
     });
 
     conn.on('data', (raw) => handleHostMsg(raw as HostMsg));
 
     conn.on('close', () => {
+      stopPinging();
       net.set({ status: 'error', error: 'Disconnected from host.' });
     });
   });
@@ -129,6 +146,9 @@ function handleHostMsg(msg: HostMsg): void {
       // Keep the loaded history live (sidebar chat + any open window) without
       // waiting for the player to reopen anything.
       sendAiHistoryReq(msg.agent);
+      break;
+    case 'pong':
+      recordLatency(Date.now() - msg.t); // round-trip time
       break;
   }
 }
