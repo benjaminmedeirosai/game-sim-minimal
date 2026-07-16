@@ -78,10 +78,34 @@ function validateList(arr: unknown, world: World): Action[] {
   return actions;
 }
 
-/** The parsed model response: accepted actions plus an optional reply. */
+/** Caps on saved memory, enforced here so a runaway model can't bloat the
+ *  cache-stable prompt: at most this many lines, each trimmed to this length. */
+const MEMORY_MAX_ENTRIES = 20;
+const MEMORY_MAX_LEN = 200;
+
+/** Parse a "memory" field into the new memory list, or undefined to signal "no
+ *  change" (field absent or not an array). An explicit empty array is honored —
+ *  it clears memory. Non-string entries and blanks are dropped; the rest are
+ *  trimmed, length-capped, and count-capped. */
+function parseMemory(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const s = item.trim().slice(0, MEMORY_MAX_LEN).trim();
+    if (s) out.push(s);
+    if (out.length >= MEMORY_MAX_ENTRIES) break;
+  }
+  return out;
+}
+
+/** The parsed model response: accepted actions, an optional reply, and an
+ *  optional new memory list (present only when the model chose to change it). */
 export interface OrchestratorResponse {
   actions: Action[];
   msg?: string;
+  /** The full replacement memory list, or undefined to leave memory unchanged. */
+  memory?: string[];
 }
 
 /** Parse a model response into accepted actions + optional player reply.
@@ -95,7 +119,11 @@ export function parseResponse(text: string, world: World): OrchestratorResponse 
     const o = obj as Record<string, unknown>;
     const actions = validateList(o.actions, world);
     const msg = typeof o.msg === 'string' ? o.msg.trim() : '';
-    return msg ? { actions, msg } : { actions };
+    const memory = parseMemory(o.memory);
+    const res: OrchestratorResponse = { actions };
+    if (msg) res.msg = msg;
+    if (memory !== undefined) res.memory = memory;
+    return res;
   }
 
   // Fallback: a bare array of actions, no message.

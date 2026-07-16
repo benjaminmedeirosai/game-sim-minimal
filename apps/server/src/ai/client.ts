@@ -18,9 +18,18 @@ export const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 export const MODEL = process.env.GSM_AI_MODEL ?? 'gemma4:e4b';
 // Pin the model resident for an hour so it never cold-loads mid-command.
 const KEEP_ALIVE = '60m';
+// The model's context window (tokens). Ollama defaults gemma to 4096, but our
+// prompt (system + world + up to ~40 conversation turns) runs ~3.7k tokens and
+// grows with the chat — overflowing 4096 makes Ollama context-SHIFT, which both
+// silently drops the head of the prompt (our system rules!) and throws away the
+// KV cache. We pin a roomier window so the whole prompt fits with headroom and
+// the prefix cache stays intact call-to-call. Must be set on EVERY request
+// (incl. warm-up) so the slot isn't reloaded with a different size mid-session.
+const NUM_CTX = 8192;
 
 export interface ChatOptions {
-  /** 0 = deterministic. We want obedient, low-variance action lists. */
+  /** Sampling temperature. 0 = deterministic; the orchestrator runs a little
+   *  warmer (see ORCHESTRATOR_OPTS) so the steward's replies vary. */
   temperature?: number;
   /** Enable the model's chain-of-thought. Defaults to false: thinking-capable
    *  models (gemma among them) otherwise reason on every call, which costs
@@ -33,7 +42,7 @@ export interface ChatOptions {
  *  single source of truth for both the request and the Config-tab display.
  *  (`think` is a top-level /api/chat field, not an option, so it's separate.) */
 function requestOptions(opts: ChatOptions): Record<string, unknown> {
-  return { temperature: opts.temperature ?? 0 };
+  return { temperature: opts.temperature ?? 0, num_ctx: NUM_CTX };
 }
 
 /** The tuning knobs currently in effect, for the Config tab. Mirrors exactly

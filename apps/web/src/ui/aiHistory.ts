@@ -9,7 +9,7 @@
 // open window refetches when the host reports a new exchange (aiEvents).
 import { describeAction } from '@game/shared';
 import type { AiConfigView, AiExchange, AiStats } from '@game/shared';
-import { aiData, aiEvents, sendAiHistoryReq } from '../net/client';
+import { aiData, aiEvents, sendAiHistoryReq, sendAiVoice } from '../net/client';
 import { closeLayer, openLayer } from './escStack';
 import { setActive } from '../state/activeSurface';
 
@@ -48,18 +48,48 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
 
   // --- rendering ---------------------------------------------------------
 
-  // A compact telemetry strip: tokens in/out, generation speed, and where the
-  // time went. Only the fields the backend reported are shown.
+  // The cold (fully-uncached) prompt-eval throughput, estimated as the FLOOR of
+  // observed prompt tok/s across exchanges — the slowest call is the one that
+  // re-evaluated the most, i.e. closest to no cache. We use it to back out, per
+  // call, how many prompt tokens were actually re-processed (promptMs × coldRate)
+  // vs. served instantly from KV cache. Ollama's prompt_eval_count is ALWAYS the
+  // full prompt (measured), so it can't reveal cache hits on its own — throughput
+  // is the real signal (a cached prefix costs ~0 time, so tok/s spikes).
+  function coldPromptRate(): number {
+    let min = Infinity;
+    for (const x of aiData.get().exchanges) {
+      const t = x.output.stats?.promptTokens;
+      const ms = x.output.stats?.promptMs;
+      if (t && ms && ms > 0) min = Math.min(min, (t / ms) * 1000);
+    }
+    return Number.isFinite(min) ? min : 0;
+  }
+
+  // A compact telemetry strip: tokens in/out with per-phase throughput, a KV
+  // cache-hit estimate, and where the time went. Only reported fields are shown.
   function statsRow(s: AiStats | undefined): string {
     if (!s) return '';
     const chips: string[] = [];
+    const inRate = s.promptTokens && s.promptMs ? Math.round((s.promptTokens / s.promptMs) * 1000) : undefined;
+
     if (s.promptTokens != null || s.outputTokens != null) {
       chips.push(`<span class="ai-chip"><b>${s.promptTokens ?? '?'}</b> in / <b>${s.outputTokens ?? '?'}</b> out tok</span>`);
     }
-    if (s.tokensPerSec != null) chips.push(`<span class="ai-chip">${s.tokensPerSec} tok/s</span>`);
-    if (s.loadMs != null && s.loadMs > 0) chips.push(`<span class="ai-chip">load ${s.loadMs}ms</span>`);
-    if (s.promptMs != null) chips.push(`<span class="ai-chip">prompt ${s.promptMs}ms</span>`);
-    if (s.evalMs != null) chips.push(`<span class="ai-chip">gen ${s.evalMs}ms</span>`);
+    // Cache-hit estimate: fraction of the prompt NOT re-evaluated this call.
+    // reeval ≈ promptMs × coldRate; hit% = 1 − reeval/total. A green/amber/red
+    // class flags healthy reuse vs. an evicted/busted prefix at a glance.
+    if (s.promptTokens && s.promptMs != null) {
+      const cold = coldPromptRate();
+      if (cold > 0) {
+        const reeval = Math.min(s.promptTokens, (s.promptMs / 1000) * cold);
+        const hit = Math.max(0, Math.min(100, Math.round((1 - reeval / s.promptTokens) * 100)));
+        const cls = hit >= 80 ? 'ai-chip-ok' : hit >= 40 ? 'ai-chip-warn' : 'ai-chip-bad';
+        chips.push(`<span class="ai-chip ${cls}" title="Estimated share of the prompt served from KV cache (not re-evaluated). Low = the cached prefix was busted/evicted.">~${hit}% cached</span>`);
+      }
+    }
+    if (inRate != null) chips.push(`<span class="ai-chip" title="Prompt-eval throughput. High (thousands) = cache hit; hundreds = cold re-eval.">prompt ${s.promptMs}ms · ${inRate.toLocaleString()} tok/s in</span>`);
+    if (s.tokensPerSec != null) chips.push(`<span class="ai-chip">gen ${s.evalMs}ms · ${s.tokensPerSec} tok/s out</span>`);
+    if (s.loadMs != null && s.loadMs > 0) chips.push(`<span class="ai-chip ai-chip-warn">load ${s.loadMs}ms</span>`);
     if (s.model) chips.push(`<span class="ai-chip ai-chip-model">${esc(s.model)}</span>`);
     if (s.doneReason && s.doneReason !== 'stop') chips.push(`<span class="ai-chip ai-chip-warn">${esc(s.doneReason)}</span>`);
     return chips.length ? `<div class="ai-stats">${chips.join('')}</div>` : '';
@@ -74,12 +104,22 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const said = x.output.msg
       ? `<div class="ai-said"><span class="ai-lbl">AI said</span><p>${esc(x.output.msg)}</p></div>`
       : '';
+    // Only present when the model rewrote saved memory on this call. Show the
+    // new list (or a "cleared" note for an explicit empty replacement).
+    const mem = x.output.memory
+      ? `<div class="ai-mem"><span class="ai-lbl">🧠 memory updated</span>` +
+        (x.output.memory.length
+          ? `<ul class="ai-acts">${x.output.memory.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>`
+          : `<div class="ai-none">cleared</div>`) +
+        `</div>`
+      : '';
     return (
       `<div class="ai-xchg">` +
       `<div class="ai-xhead"><span class="ai-cmd">${esc(x.input.command)}</span>` +
       `<span class="ai-xmeta">${who} · t${x.tick} · ${x.ms}ms</span></div>` +
       statsRow(x.output.stats) +
       said +
+      mem +
       `<div class="ai-xcol"><span class="ai-lbl">Actions (${x.output.actions.length})</span>${acts}${err}</div>` +
       `<details class="ai-raw"><summary>model output</summary><pre>${esc(x.output.raw || '(empty)')}</pre></details>` +
       `<details class="ai-raw"><summary>prompt sent</summary><pre>${esc(x.input.raw)}</pre></details>` +
@@ -94,14 +134,32 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     return `<div class="ai-list">${[...exchanges].reverse().map(exchangeCard).join('')}</div>`;
   }
 
+  // chars→tokens: calibrate against the most recent real exchange (its verbatim
+  // prompt length vs the daemon's reported promptTokens) so the estimate tracks
+  // THIS model's tokenizer, which is denser than the generic ~4 chars/tok on
+  // our coordinate-heavy prompts. Fall back to 4 when we've no exchange yet.
+  function charsPerToken(): number {
+    for (const x of [...aiData.get().exchanges].reverse()) {
+      const chars = x.input.raw.length;
+      const toks = x.output.stats?.promptTokens;
+      if (chars > 0 && toks && toks > 0) return chars / toks;
+    }
+    return 4;
+  }
+  const sizeLabel = (chars: number, cpt: number): string =>
+    `${chars.toLocaleString()} chars · ~${Math.round(chars / cpt).toLocaleString()} tok`;
+
   function renderConfig(config: AiConfigView | undefined): string {
     if (!config) return `<div class="ai-placeholder">Loading config…</div>`;
+    const cpt = charsPerToken();
     const toggle =
       `<div class="ai-cfg-toggle">` +
       `<button class="seg ${configMode === 'pretty' ? 'active' : ''}" data-cfg="pretty">View Pretty</button>` +
       `<button class="seg ${configMode === 'raw' ? 'active' : ''}" data-cfg="raw">View Raw</button>` +
+      `<span class="ai-cfg-size" title="Total prompt size. Token estimate calibrated to the model's own tokenizer from recent exchanges.">${sizeLabel(config.raw.length, cpt)}</span>` +
       `<span class="ai-model">model: ${esc(config.model)}</span>` +
       `</div>`;
+    const voice = voiceCard(config);
     const settings = settingsCard(config);
     const content =
       configMode === 'raw'
@@ -109,10 +167,33 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
         : `<div class="ai-cfg-parts">${config.parts
             .map(
               (p) =>
-                `<section class="ai-part"><h3>${esc(p.label)}</h3><pre>${esc(p.content)}</pre></section>`,
+                `<section class="ai-part"><h3>${esc(p.label)}` +
+                `<span class="ai-part-size">${sizeLabel(p.content.length, cpt)}</span></h3>` +
+                `<pre>${esc(p.content)}</pre></section>`,
             )
             .join('')}</div>`;
-    return toggle + settings + content;
+    return toggle + voice + settings + content;
+  }
+
+  // The Voice picker: a button per style (plus "Off"), with the active one
+  // highlighted. Clicking sends the switch to the host, which flips it colony-
+  // wide, persists it, and broadcasts back — so the "Voice" part below (in View
+  // Pretty) updates to show EXACTLY what the chosen persona adds to the prompt
+  // (or vanishes when Off). This is what makes styles A/B-able at a glance.
+  function voiceCard(config: AiConfigView): string {
+    const btns = config.voices
+      .map(
+        (v) =>
+          `<button class="seg ai-voice-btn ${v.id === config.voice ? 'active' : ''}" ` +
+          `data-voice="${esc(v.id)}">${esc(v.label)}</button>`,
+      )
+      .join('');
+    return (
+      `<section class="ai-voice"><div class="ai-voice-head"><h3>Voice</h3>` +
+      `<span class="ai-voice-sub">the persona the AI's chat replies use — pick one or turn it Off; ` +
+      `the change applies to the live prompt (see the Voice section below).</span></div>` +
+      `<div class="ai-voice-btns">${btns}</div></section>`
+    );
   }
 
   // The tuning knobs the host actually sends per call — model, keep-alive, and
@@ -184,10 +265,17 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     render();
   });
   body.addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-cfg]');
-    if (!btn) return;
-    configMode = btn.dataset.cfg as 'pretty' | 'raw';
-    render();
+    const target = e.target as HTMLElement;
+    const cfgBtn = target.closest<HTMLElement>('[data-cfg]');
+    if (cfgBtn) {
+      configMode = cfgBtn.dataset.cfg as 'pretty' | 'raw';
+      render();
+      return;
+    }
+    // Switch voice: fire-and-forget. The host echoes an aiEvent, which triggers
+    // a refetch (below), so the picker + Voice part re-render from the new state.
+    const voiceBtn = target.closest<HTMLElement>('[data-voice]');
+    if (voiceBtn) sendAiVoice(current, voiceBtn.dataset.voice!);
   });
   select.addEventListener('change', () => {
     current = select.value;

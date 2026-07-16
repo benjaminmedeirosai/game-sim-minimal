@@ -100,6 +100,14 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 
 .sb-section { display: flex; flex-direction: column; min-height: 0; padding: 12px 12px 0; }
 .sb-section h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+/* Chat header: title on the left, a small Clear button on the right. */
+.sb-chat-head { display: flex; align-items: center; justify-content: space-between; }
+.sb-chat-head h2 { margin: 0 0 8px; }
+.sb-clear {
+  margin-bottom: 8px; padding: 2px 8px; font-size: 11px; color: var(--muted);
+  background: transparent; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+.sb-clear:hover { color: var(--fg); border-color: var(--muted); background: #262a35; }
 /* Chat gets the larger share; actions the smaller. Both scroll internally. */
 .sb-chat { flex: 2 1 0; }
 .sb-actions { flex: 1 1 0; padding-bottom: 12px; }
@@ -116,6 +124,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .chat-text { color: var(--fg); white-space: pre-wrap; word-break: break-word; }
 .chat-ai .chat-text { color: #d7ccff; }
 .chat-err .chat-text { color: #ff9b9b; }
+.chat-mem { margin-top: 1px; }
+.chat-mem-icon { font-size: 12px; line-height: 1; cursor: help; opacity: 0.9; }
 .chat-acts { display: flex; flex-wrap: wrap; gap: 4px; }
 .chat-act {
   font-size: 10px; color: var(--muted); background: rgba(255,255,255,0.05);
@@ -316,6 +326,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   margin: 3px 0 0; font-size: 13px; line-height: 1.4; color: #d7ccff;
   border-left: 2px solid #a78bfa; padding-left: 10px;
 }
+.ai-mem { margin: 6px 0 2px; }
+.ai-mem .ai-acts li { border-left-color: var(--warn); }
 .ai-stats { display: flex; flex-wrap: wrap; gap: 5px; }
 .ai-chip {
   font-size: 10px; color: var(--muted); background: #0a0c11;
@@ -325,6 +337,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .ai-chip b { color: var(--fg); font-weight: 600; }
 .ai-chip-model { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .ai-chip-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.ai-chip-ok { color: #4ade80; border-color: color-mix(in srgb, #4ade80 45%, var(--border)); }
+.ai-chip-bad { color: #f87171; border-color: color-mix(in srgb, #f87171 50%, var(--border)); }
 .ai-none { font-size: 12px; color: var(--muted); font-style: italic; }
 .ai-err { font-size: 12px; color: var(--warn); margin-top: 4px; }
 .ai-raw summary { cursor: pointer; font-size: 11px; color: var(--accent); }
@@ -341,7 +355,11 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 }
 .seg:hover { background: #2f3441; }
 .seg.active { background: color-mix(in srgb, var(--accent) 26%, transparent); border-color: var(--accent); color: #fff; }
-.ai-model { margin-left: auto; font-size: 11px; color: var(--muted); }
+.ai-cfg-size {
+  margin-left: auto; font-size: 11px; color: var(--fg);
+  font-variant-numeric: tabular-nums; cursor: help;
+}
+.ai-model { font-size: 11px; color: var(--muted); }
 .ai-settings { margin-bottom: 16px; }
 .ai-settings h3 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
 .ai-set-grid {
@@ -362,8 +380,24 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: var(--warn); color: #12141a; font-size: 10px; font-weight: 700;
   font-family: sans-serif; cursor: help; vertical-align: middle;
 }
+/* Voice picker (Config tab): a labeled section with one button per style. */
+.ai-voice { margin-bottom: 16px; }
+.ai-voice-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.ai-voice-head h3 {
+  margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent);
+}
+.ai-voice-sub { font-size: 11px; color: var(--muted); }
+.ai-voice-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+
 .ai-cfg-parts { display: grid; gap: 12px; }
-.ai-part h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
+.ai-part h3 {
+  display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent);
+}
+.ai-part-size {
+  margin-left: auto; font-size: 10px; letter-spacing: 0; text-transform: none;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
 .ai-part pre, .ai-cfg-raw {
   margin: 0; padding: 12px; background: #0a0c11; border: 1px solid var(--border);
   border-radius: 8px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;

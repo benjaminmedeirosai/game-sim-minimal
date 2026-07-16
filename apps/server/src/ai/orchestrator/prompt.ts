@@ -16,6 +16,7 @@ import {
 } from '@game/shared';
 import type { AiPromptPart, Coord, ConversationTurn, World } from '@game/shared';
 import type { ChatMessage } from '../types.js';
+import { voicePrompt } from './voice.js';
 
 // --- Stable prefix -------------------------------------------------------
 
@@ -109,14 +110,22 @@ export function systemPrompt(): string {
     'into a plan the simulation can execute, and optionally reply to the players.',
     '',
     'Respond with ONLY one JSON object, no markdown or code fences:',
-    '  {"actions": [ ...action objects... ], "msg": "..."}',
+    '  {"actions": [ ...action objects... ], "msg": "...", "memory": [ "..." ]}',
     '',
     '  - "actions": the plan (may be [] when there is nothing to do).',
-    '  - "msg": OPTIONAL short line to the players. Omit it (or use "") for',
-    '    routine commands — most need no words. Include it only when useful:',
-    '    to ask a clarifying question, report you could not do something, or',
-    '    note something worth flagging. Do not narrate every action. Address a',
-    '    player by name when replying to them.',
+    '  - "msg": a SHORT reply to the player — one brief line, spoken in the',
+    '    colony\'s voice when a "Voice" section is given below (otherwise plain and',
+    '    direct). Include one whenever you act on a PLAYER\'s command, or when you',
+    '    have something real to say (a question, a refusal, a status note). Omit it',
+    '    on autonomous ticks with no player, and never narrate every action or',
+    '    repeat a line you have used before.',
+    '  - "memory": OPTIONAL and OFF BY DEFAULT. OMIT this field on virtually every',
+    '    command. Do NOT echo the existing memory back — repeating unchanged lines',
+    '    is wrong and wasteful. Include "memory" ONLY when the player explicitly',
+    '    states a NEW or CHANGED standing preference ("always ...", "from now on',
+    '    ...", "never ...", "forget ..."); then return the ENTIRE new list, which',
+    '    REPLACES the old one wholesale. A normal task = no "memory" field. See',
+    '    "Memory" below.',
     '',
     'Action shapes:',
     '  {"type":"move","unitId":"<id>","to":{"x":<int>,"y":<int>}}',
@@ -151,6 +160,20 @@ export function systemPrompt(): string {
     '  - The resource lists show ONLY objects currently in some unit\'s sight.',
     '    Anything beyond that is unknown — it may exist but is not listed.',
     '  - To find more resources, move a unit to scout unexplored ground first.',
+    '',
+    'Memory (standing player preferences):',
+    '  - The "Memory" section below the world holds durable instructions players',
+    '    have told you to remember (e.g. "always keep one unit scouting", "prefer',
+    '    axes over pickaxes"). Treat it as always-on: obey every line on EVERY',
+    '    command unless the current command overrides it.',
+    '  - When a player states a lasting preference — "always ...", "from now on',
+    '    ...", "never ...", "stop ...", "forget ..." — update memory by returning',
+    '    the full new list in "memory". Keep the existing lines you are not',
+    '    changing; add, reword, or drop only what the player asked. Each line is a',
+    '    short imperative. Return [] to clear all memory.',
+    '  - Store ONLY durable preferences here. Do NOT store one-off commands, chat,',
+    '    world state, or coordinates. If a command is a normal one-off task, omit',
+    '    "memory" entirely.',
     '',
     'Rules:',
     '  - Use only unit ids that exist in the world snapshot.',
@@ -264,8 +287,14 @@ export function worldContext(world: World): string {
     (b) => `  ${b.type}@(${b.pos.x},${b.pos.y})`,
   );
 
+  // NB: the world dimensions are constant, but we deliberately DROP the tick
+  // counter here. It advances every tick (BASE_TPS/sec), so including it would
+  // change this block on every single call — busting Ollama's prefix KV-cache
+  // even when the units haven't moved — for essentially no planning value (the
+  // model reasons about durations from the rules, not the absolute clock).
+  // Omitting it lets a stationary-world follow-up reuse the cache in full.
   return [
-    `World ${world.width}x${world.height}, tick ${world.tick}.`,
+    `World ${world.width}x${world.height}.`,
     'Units:',
     ...units,
     `Idle units, free to assign right now: ${idleIds.length ? idleIds.join(', ') : 'none'}.`,
@@ -278,13 +307,23 @@ export function worldContext(world: World): string {
   ].join('\n');
 }
 
-/** The players sharing the colony, and who issued the current command. */
-export function rosterContext(roster: string[], submitter?: string): string {
+/** The players sharing the colony. This is the STABLE roster only — it changes
+ *  just when someone joins or leaves. Who issued the CURRENT command lives with
+ *  the command in the volatile tail (see `assemble`), so a new command from a
+ *  different player doesn't invalidate the cached roster line. */
+export function rosterContext(roster: string[]): string {
   const online = roster.length ? roster.join(', ') : '(none listed)';
+  return `Players online: ${online}.`;
+}
+
+/** The volatile command tail: who issued it (changes per command) plus the
+ *  command text itself. Kept together at the very end of the prompt so it's the
+ *  only thing that must re-evaluate on a same-world follow-up. */
+export function commandContext(command: string, submitter?: string): string {
   const from = submitter
     ? `This command is from ${submitter}.`
     : 'This command is autonomous (no player).';
-  return [`Players online: ${online}.`, from].join('\n');
+  return [from, `Command: ${command}`].join('\n');
 }
 
 /** The last few conversation turns so the model has short-term memory (a player
@@ -292,6 +331,15 @@ export function rosterContext(roster: string[], submitter?: string): string {
 export function historyContext(history: ConversationTurn[]): string {
   if (history.length === 0) return '(no earlier messages)';
   return history.map((t) => `${t.who}: ${t.text}`).join('\n');
+}
+
+/** The persistent memory: standing player preferences the model chose to keep,
+ *  more stable than the per-call world/conversation tail but editable (unlike
+ *  the fixed system prompt). Rendered as a plain bullet list the model can read
+ *  back and rewrite. */
+export function memoryContext(memory: string[]): string {
+  if (memory.length === 0) return '(nothing saved yet)';
+  return memory.map((m) => `  - ${m}`).join('\n');
 }
 
 export interface AssembleInput {
@@ -303,45 +351,78 @@ export interface AssembleInput {
   roster?: string[];
   /** Recent conversation turns (oldest first). */
   history?: ConversationTurn[];
+  /** Standing player preferences saved across calls (the model amends these). */
+  memory?: string[];
+  /** Which voice style the "msg" reply should use (a VOICES id, or 'off' /
+   *  undefined for no Voice section — the model then replies plainly). */
+  voice?: string;
 }
 
 /** Assemble the full prompt, returning the messages to send, the exact raw
- *  string (for View Raw), and the labeled sections (View Pretty). Ordered for
- *  the prompt cache: the stable System prefix first, then the dynamic world /
- *  players / conversation / command tail. When `command` is omitted this yields
- *  the Config-tab template. */
+ *  string (for View Raw), and the labeled sections (View Pretty). When `command`
+ *  is omitted this yields the Config-tab template.
+ *
+ *  Ordering is tuned for Ollama's prefix KV-cache, which reuses the longest
+ *  IDENTICAL token prefix across calls and re-evaluates everything from the
+ *  first changed token onward. So sections are laid out by how RELIABLY each
+ *  changes between two consecutive commands, least-changing first:
+ *    System (never) → Voice (only when the player switches style, rare) →
+ *    Memory (rare) → Players (roster only, rare) → World
+ *    (only when units actually move/harvest — often identical at rest) →
+ *    Conversation (grows by one turn on EVERY command) → Command (submitter +
+ *    text; every call, tiny).
+ *  The subtlety: the conversation is the more reliable cache-buster — it gains a
+ *  turn on every command — whereas the world is frequently unchanged between
+ *  commands. So the world goes AHEAD of the conversation: when units are idle,
+ *  the whole (large) world block stays cached and only the new chat turn +
+ *  command re-evaluate (measured ~150ms vs ~2700ms for the reverse order). When
+ *  units are moving both orders re-evaluate the world anyway, so this is never
+ *  worse. The per-command submitter line rides with the command in the tail. */
 export function assemble(
   world: World,
   input: AssembleInput = {},
 ): { messages: ChatMessage[]; raw: string; parts: AiPromptPart[] } {
-  const { command, submitter, roster = [], history = [] } = input;
+  const { command, submitter, roster = [], history = [], memory = [], voice } = input;
   const sys = systemPrompt();
+  // The Voice section (persona for "msg") is toggleable/switchable at runtime,
+  // so it lives outside the fixed system rules. When active we fold it into the
+  // system message (it IS an instruction) AND surface it as its own labeled part
+  // so the Config tab can show exactly what the current voice adds. Empty = the
+  // player turned voice off (or picked an unknown id): no section, plain replies.
+  const voiceText = voicePrompt(voice ?? '');
+  const sysContent = voiceText ? `${sys}\n\n${voiceText}` : sys;
+  const mem = memoryContext(memory);
   const ctx = worldContext(world);
-  const players = rosterContext(roster, submitter);
+  const players = rosterContext(roster);
   const convo = historyContext(history);
-  const cmd = command ?? '<the player command goes here>';
+  const cmd = commandContext(command ?? '<the player command goes here>', submitter);
 
   const parts: AiPromptPart[] = [
     { label: 'System', content: sys },
-    { label: 'World context', content: ctx },
+    ...(voiceText ? [{ label: 'Voice', content: voiceText }] : []),
+    { label: 'Memory', content: mem },
     { label: 'Players', content: players },
+    { label: 'World context', content: ctx },
     { label: 'Recent conversation', content: convo },
     { label: 'Command', content: cmd },
   ];
 
   const userContent = [
-    ctx,
+    'Memory (standing player preferences):',
+    mem,
     '',
     players,
+    '',
+    ctx,
     '',
     'Recent conversation:',
     convo,
     '',
-    `Command: ${cmd}`,
+    cmd,
   ].join('\n');
 
   const messages: ChatMessage[] = [
-    { role: 'system', content: sys },
+    { role: 'system', content: sysContent },
     { role: 'user', content: userContent },
   ];
 

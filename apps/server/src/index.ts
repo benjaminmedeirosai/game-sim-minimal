@@ -83,6 +83,20 @@ function dropPeer(id: string, reason: string): void {
 // stats (~1×/sec) through our resilient broadcast.
 const host = new Host(broadcast);
 
+// Persist the session on the way out so a graceful stop — Ctrl-C, or tsx's
+// SIGTERM when it restarts on a file change — resumes exactly where it left
+// off. Idempotent + synchronous, so a double signal can't double-write.
+let shuttingDown = false;
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[server] ${signal} received — saving session before exit`);
+  host.save();
+  process.exit(0);
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
 // Local status/health endpoint. NOT the game transport (that's WebRTC) — it
 // exists so the process binds a port the Servers UI can watch for readiness,
 // and gives a quick way to eyeball the running world.
@@ -159,7 +173,11 @@ peer.on('connection', (conn) => {
       const players = roster.list().map((p) => p.name);
       void host.runCommand(msg.text, playerSource(conn.peer), players);
     } else if (msg.m === 'aiHistoryReq') {
-      safeSend(conn, host.aiHistoryMsg(msg.agent));
+      safeSend(conn, host.aiHistoryMsg(msg.agent, roster.list().map((p) => p.name)));
+    } else if (msg.m === 'aiClear') {
+      host.clearAi(msg.agent);
+    } else if (msg.m === 'aiVoice') {
+      host.setAiVoice(msg.agent, msg.voice);
     } else if (msg.m === 'ping') {
       safeSend(conn, { m: 'pong', t: msg.t }); // echo for RTT measurement
     }

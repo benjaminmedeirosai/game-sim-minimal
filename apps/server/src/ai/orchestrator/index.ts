@@ -5,6 +5,7 @@ import { MODEL, chatSettings, ollama } from '../client.js';
 import type { ChatOptions } from '../client.js';
 import { assemble } from './prompt.js';
 import { parseResponse } from './parse.js';
+import { DEFAULT_VOICE, voiceOptions } from './voice.js';
 import { ORCHESTRATOR_AGENT } from '@game/shared';
 import type {
   Action,
@@ -17,16 +18,21 @@ import type {
 export { ORCHESTRATOR_AGENT };
 
 // The tuning for orchestrator calls, in one place so the request and the
-// Config-tab display can't disagree: deterministic (temperature 0) for
-// obedient, low-variance action lists, and thinking OFF — gemma reasons on
-// every call otherwise, ~28× slower for no gain on these short prompts.
-const ORCHESTRATOR_OPTS: ChatOptions = { temperature: 0, think: false };
+// Config-tab display can't disagree. A modest temperature (0.6, not 0) so the
+// steward's in-character "msg" replies stay VARIED instead of collapsing to the
+// same sentence every time; the JSON action shapes are constrained enough by
+// the prompt that this bit of heat doesn't hurt obedience. Thinking OFF — gemma
+// reasons on every call otherwise, ~28× slower for no gain on these short prompts.
+const ORCHESTRATOR_OPTS: ChatOptions = { temperature: 0.6, think: false };
 
 export interface RunResult {
   actions: Action[];
   input: AiExchange['input'];
   output: AiExchange['output'];
   ms: number;
+  /** The new memory the model committed this call, or undefined if unchanged.
+   *  The host applies it as the colony's saved memory. */
+  memory?: string[];
 }
 
 /** The live inputs a command needs to build its prompt. Resolved LAZILY (right
@@ -37,6 +43,10 @@ export interface OrchestratorContext {
   roster?: string[];
   /** Recent conversation turns so the model has short-term memory. */
   history?: ConversationTurn[];
+  /** The colony's saved memory (standing player preferences) at send-time. */
+  memory?: string[];
+  /** The active voice style id (or 'off') at send-time. */
+  voice?: string;
 }
 
 export interface RunOrchestratorInput {
@@ -62,23 +72,33 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
   let worldAtSend: World | undefined;
 
   const build = (): ReturnType<typeof assemble>['messages'] => {
-    const { world, roster = [], history = [] } = context();
+    const { world, roster = [], history = [], memory = [], voice } = context();
     worldAtSend = world;
-    const { messages, raw, parts } = assemble(world, { command, submitter, roster, history });
+    const { messages, raw, parts } = assemble(world, {
+      command,
+      submitter,
+      roster,
+      history,
+      memory,
+      voice,
+    });
     record = { command, onBehalfOf: submitter, raw, parts };
     return messages;
   };
 
   try {
     const { text, ms, stats } = await ollama.chatDeferred(build, ORCHESTRATOR_OPTS);
-    const { actions, msg } = parseResponse(text, worldAtSend!);
-    return { actions, input: record!, output: { raw: text, actions, msg, stats }, ms };
+    const { actions, msg, memory } = parseResponse(text, worldAtSend!);
+    const output: AiExchange['output'] = { raw: text, actions, stats };
+    if (msg) output.msg = msg;
+    if (memory !== undefined) output.memory = memory;
+    return { actions, input: record!, output, ms, memory };
   } catch (err) {
     // If we failed before assembling (e.g. daemon down), build a record now so
     // the exchange is still auditable.
     if (!record) {
-      const { world, roster = [], history = [] } = context();
-      const { raw, parts } = assemble(world, { command, submitter, roster, history });
+      const { world, roster = [], history = [], memory = [], voice } = context();
+      const { raw, parts } = assemble(world, { command, submitter, roster, history, memory, voice });
       record = { command, onBehalfOf: submitter, raw, parts };
     }
     return {
@@ -90,15 +110,28 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
   }
 }
 
-/** The Config-tab view: the current prompt template (command left as a
- *  placeholder) shown raw and sectioned. */
-export function orchestratorConfig(world: World): AiConfigView {
-  const { raw, parts } = assemble(world);
+/** The Config-tab view: exactly what we'd send RIGHT NOW, with the command left
+ *  as a placeholder. Takes the same live roster/history/memory the real call
+ *  does so the preview reflects reality (roster, recent conversation, saved
+ *  memory) rather than an empty template. */
+export function orchestratorConfig(
+  world: World,
+  ctx: {
+    memory?: string[];
+    roster?: string[];
+    history?: ConversationTurn[];
+    voice?: string;
+  } = {},
+): AiConfigView {
+  const { memory = [], roster = [], history = [], voice = DEFAULT_VOICE } = ctx;
+  const { raw, parts } = assemble(world, { memory, roster, history, voice });
   return {
     agent: ORCHESTRATOR_AGENT,
     model: MODEL,
     raw,
     parts,
     settings: chatSettings(ORCHESTRATOR_OPTS),
+    voices: voiceOptions(),
+    voice,
   };
 }

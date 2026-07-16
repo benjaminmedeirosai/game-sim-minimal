@@ -192,3 +192,11 @@ export function sendCommand(text: string): void {
 export function sendAiHistoryReq(agent: string): void {
   send({ m: 'aiHistoryReq', agent });
 }
+
+export function sendAiClear(agent: string): void {
+  send({ m: 'aiClear', agent });
+}
+
+export function sendAiVoice(agent: string, voice: string): void {
+  send({ m: 'aiVoice', agent, voice });
+}

@@ -109,9 +109,20 @@ export interface AiExchange {
     /** Model telemetry for this call (tokens, per-stage timings). Absent on a
      *  failure that never reached the model. */
     stats?: AiStats;
+    /** The new persistent memory the model committed on this call, if it chose
+     *  to change it (a full replacement of the prior list). Absent when memory
+     *  was left unchanged — which is the common case. */
+    memory?: string[];
   };
   /** Round-trip latency in milliseconds. */
   ms: number;
+}
+
+/** One selectable voice style for the Config tab's Voice picker. `id` is what
+ *  the client sends back to switch to it ('off' disables the Voice section). */
+export interface AiVoiceOption {
+  id: string;
+  label: string;
 }
 
 /** The Config tab payload for an agent: the current prompt template shown two
@@ -124,4 +135,10 @@ export interface AiConfigView {
   parts: AiPromptPart[];
   /** The request knobs currently in effect for this agent's calls. */
   settings: AiSettings;
+  /** Every voice style the player can pick (incl. an 'off' entry), for the
+   *  Config tab's Voice picker. */
+  voices: AiVoiceOption[];
+  /** The voice style currently active (an `voices[].id`, 'off' when disabled).
+   *  Determines whether a "Voice" part appears above and what it contains. */
+  voice: string;
 }

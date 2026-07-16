@@ -7,7 +7,7 @@
 // commands still awaiting the model.
 import { ORCHESTRATOR_AGENT, describeAction } from '@game/shared';
 import type { AiExchange, AiPending } from '@game/shared';
-import { aiData, sendCommand } from '../net/client';
+import { aiData, sendAiClear, sendCommand } from '../net/client';
 import { mountActionsPanel } from './actionsPanel';
 
 const AI_COLOR = '#a78bfa';
@@ -54,7 +54,13 @@ function chatTurn(x: AiExchange): string {
     ? `<div class="chat-msg chat-ai chat-err"><span class="chat-text">${esc(x.output.error)}</span></div>`
     : '';
 
-  return `<div class="chat-turn">${userBubble(who, x.input.command)}${reply}${acts}${err}</div>`;
+  // A brain badge flags that this response changed the AI's saved memory (the
+  // new memory itself lives in the AI window — here we only signal it happened).
+  const mem = x.output.memory
+    ? `<div class="chat-mem"><span class="chat-mem-icon" title="AI memory updated">🧠</span></div>`
+    : '';
+
+  return `<div class="chat-turn">${userBubble(who, x.input.command)}${reply}${mem}${acts}${err}</div>`;
 }
 
 /** A command that's landed but hasn't been answered yet: the submitter's bubble
@@ -68,7 +74,11 @@ function pendingTurn(p: AiPending): string {
 export function mountSidebar(aside: HTMLElement): void {
   aside.innerHTML = `
     <section class="sb-section sb-chat">
-      <h2>AI Chat</h2>
+      <div class="sb-chat-head">
+        <h2>AI Chat</h2>
+        <button class="sb-clear" id="sb-chat-clear" type="button"
+                title="Clear the AI chat history (does not touch the world or saved memory)">Clear</button>
+      </div>
       <div class="chat-log" id="sb-chat-log"></div>
       <form class="chat-form" id="sb-chat-form">
         <input class="chat-input" type="text" autocomplete="off" spellcheck="false"
@@ -83,6 +93,7 @@ export function mountSidebar(aside: HTMLElement): void {
   const log = aside.querySelector<HTMLElement>('#sb-chat-log')!;
   const form = aside.querySelector<HTMLFormElement>('#sb-chat-form')!;
   const input = aside.querySelector<HTMLInputElement>('.chat-input')!;
+  const clearBtn = aside.querySelector<HTMLButtonElement>('#sb-chat-clear')!;
 
   // Reuse the exact Actions panel renderer in the sidebar's actions slot.
   mountActionsPanel(aside.querySelector<HTMLElement>('#sb-actions')!);
@@ -104,5 +115,13 @@ export function mountSidebar(aside: HTMLElement): void {
     if (!text) return;
     sendCommand(text);
     input.value = '';
+  });
+
+  // Clear the shared chat history on the host (removes context poisoning). We
+  // confirm first since it wipes the whole transcript for everyone; the host
+  // broadcasts the empty log back, so the view updates via the aiData sub.
+  clearBtn.addEventListener('click', () => {
+    if (log.querySelector('.chat-turn') && !confirm('Clear the AI chat history for everyone? This cannot be undone.')) return;
+    sendAiClear(ORCHESTRATOR_AGENT);
   });
 }

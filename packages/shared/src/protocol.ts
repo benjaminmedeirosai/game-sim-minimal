@@ -30,6 +30,12 @@ export type ClientMsg =
   | { m: 'command'; text: string }
   // Ask the host for an agent's full history + current prompt config.
   | { m: 'aiHistoryReq'; agent: string }
+  // Wipe an agent's conversation/exchange history (e.g. to clear context
+  // poisoning). Does not touch the world or saved memory — just the chat log.
+  | { m: 'aiClear'; agent: string }
+  // Switch an agent's voice style (a Config-tab AiVoiceOption id, or 'off' to
+  // drop the Voice section). Colony-wide + persisted; changes the live prompt.
+  | { m: 'aiVoice'; agent: string; voice: string }
   // Round-trip latency probe: `t` is the client's own send time, echoed back
   // in `pong` so the client can measure RTT without any host/client clock sync.
   | { m: 'ping'; t: number };
