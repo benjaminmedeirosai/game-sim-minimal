@@ -76,6 +76,10 @@ let clientAllowOthers = false;
 // first snapshot so we can pick the newer of it vs. our local camera.
 let hostCamera: CameraState | undefined;
 let lastWorldId: string | undefined;
+// Highest snapshot tick applied for the current world. Snapshots inflate
+// asynchronously, so a slower-decompressing older frame can resolve after a
+// newer one — this lets us drop the stale straggler instead of rewinding.
+let lastSnapshotTick = -1;
 let pingTimer: ReturnType<typeof setInterval> | undefined;
 
 const PING_INTERVAL_MS = 2000;
@@ -177,7 +181,19 @@ export function connect(name: string, allowOthers: boolean): void {
       // connected on `welcome`, or back to the form on `rejected`.
     });
 
-    conn.on('data', (raw) => handleHostMsg(raw as HostMsg));
+    conn.on('data', (raw) => {
+      // Large host messages arrive gzipped as a binary frame (see safeSend on the
+      // host); small ones come through as plain objects. Inflate the binary ones
+      // off the event-loop, then dispatch. Decompression is async, so the
+      // snapshot handler guards against an older frame landing after a newer one.
+      if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+        inflate(raw as ArrayBuffer | ArrayBufferView)
+          .then((msg) => handleHostMsg(msg as HostMsg))
+          .catch((err) => console.error('failed to inflate host message', err));
+      } else {
+        handleHostMsg(raw as HostMsg);
+      }
+    });
 
     conn.on('close', () => {
       stopPinging();
@@ -198,6 +214,18 @@ export function connect(name: string, allowOthers: boolean): void {
         : type;
     net.set({ status: 'error', error: detail });
   });
+}
+
+/** Inflate a gzipped binary host frame back into its message object. Uses the
+ *  built-in DecompressionStream (zero deps) via the Response stream plumbing. */
+async function inflate(buf: ArrayBuffer | ArrayBufferView): Promise<unknown> {
+  const bytes =
+    buf instanceof ArrayBuffer
+      ? new Uint8Array(buf)
+      : new Uint8Array(buf.buffer as ArrayBuffer, buf.byteOffset, buf.byteLength);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const text = await new Response(stream).text();
+  return JSON.parse(text);
 }
 
 function handleHostMsg(msg: HostMsg): void {
@@ -224,14 +252,20 @@ function handleHostMsg(msg: HostMsg): void {
     case 'roster':
       net.set({ roster: msg.roster });
       break;
-    case 'snapshot':
-      // Approximate the uncompressed wire payload: JSON is ASCII-dominant here,
-      // so string length ≈ byte count. This is the whole world sent every tick,
-      // so it's what a compression/delta pass would target first.
+    case 'snapshot': {
+      // Drop a stale frame that inflated out of order (same world, older tick).
+      // A new world (different id) always applies and resets the tick baseline.
+      const w = msg.world;
+      if (w.id === lastWorldId && w.tick < lastSnapshotTick) break;
+      // Logical (uncompressed) world size — what the perf panel reports. The
+      // wire payload is now gzipped (~20× smaller); this is still the useful
+      // "how heavy is the world" number and what a delta pass would target.
       recordSnapshot(JSON.stringify(msg).length);
-      onSnapshot(msg.world);
+      onSnapshot(w); // sets lastWorldId on a new world
+      lastSnapshotTick = w.tick;
       actionLog.set(() => msg.actionLog); // replace (updater form: array, not a merge)
       break;
+    }
     case 'stats':
       game.set({ stats: msg.stats, tick: msg.tick, speed: msg.speed });
       break;

@@ -5,6 +5,7 @@
 import './webrtc-polyfill.js';
 
 import { createServer } from 'node:http';
+import { gzipSync } from 'node:zlib';
 import peerModule from 'peerjs';
 import type { DataConnection } from 'peerjs';
 
@@ -44,11 +45,22 @@ function playerSource(peerId: string): ActionSource {
   return { kind: 'player', peerId, name };
 }
 
-/** Send to one peer, tolerating a dead/closing channel. Returns success. */
+// Above this JSON size (bytes), gzip the payload before sending. WebRTC data
+// channels don't compress (unlike HTTP), and the full-world snapshot is ~300KB
+// of highly repetitive JSON sent ~10×/s — raw, that floods the channel's send
+// buffer and the big message never reassembles on the far side. gzip cuts it
+// ~20× so it drains easily. Small control messages stay plain objects (PeerJS
+// msgpacks those) — not worth the CPU or the binary framing.
+const COMPRESS_OVER_BYTES = 8192;
+
+/** Send to one peer, tolerating a dead/closing channel. Large messages go out
+ *  gzipped (as bytes); the client detects a binary frame and inflates it.
+ *  Returns success. */
 function safeSend(conn: DataConnection, msg: HostMsg): boolean {
   if (!conn.open) return false;
   try {
-    conn.send(msg);
+    const json = JSON.stringify(msg);
+    conn.send(json.length > COMPRESS_OVER_BYTES ? gzipSync(json) : msg);
     return true;
   } catch {
     return false;
