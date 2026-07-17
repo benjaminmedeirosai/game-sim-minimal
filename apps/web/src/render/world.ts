@@ -7,13 +7,20 @@
 // Redraws are batched with requestAnimationFrame. Flat shapes now; swap in
 // <image> sprites later without touching this file's structure.
 import {
+  BASE_TPS,
   BUILDINGS,
   BUILDING_IDS,
   RECIPES,
   RECIPE_IDS,
   TERRAIN_COLORS,
+  bagLevel,
+  baseSpeed,
+  effectiveSpeed,
+  encumbrance,
   isBuildable,
   tileAt,
+  unitCapacity,
+  unitLoad,
 } from '@game/shared';
 import type { Unit, World } from '@game/shared';
 import { sendAction } from '../net/client';
@@ -24,7 +31,7 @@ import { recordDraw } from '../state/clientPerf';
 import { isExplored, isVisible, rememberedObject, resetFog, updateFog } from '../state/fog';
 import { pointerTile } from '../state/pointer';
 import { closeLayer, openLayer } from '../ui/escStack';
-import { buildingSvg, objectSvg, unitSvg } from './sprites';
+import { buildingSvg, constructionSvg, objectSvg, unitSvg } from './sprites';
 import { clampTilesAcross, refreshViewportInfo, setViewportContainer, wheelZoom } from './viewport';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -121,6 +128,9 @@ export function mountWorld(container: HTMLElement): void {
     if (world) updateFog(world); // fold this snapshot into the client's map memory
     schedule(!!newWorld, true);
     updateInfo(info);
+    // Even when updateInfo bails (structure unchanged), a live craft/build job's
+    // timer still needs its per-tick nudge — patched without a rebuild.
+    updateProgress(info);
   });
   camera.subscribe(() => schedule(true, true)); // view changed → re-cull both
   selection.subscribe(() => {
@@ -231,6 +241,22 @@ function buildDyn(world: World, r: CullRange, selId: string | undefined): string
     parts.push(`<g transform="translate(${b.pos.x} ${b.pos.y})">${buildingSvg(b.type)}</g>`);
   }
 
+  // Construction sites: a unit with an active build job stakes out its plot the
+  // moment work starts (the finished building only appears on completion), so
+  // the site reads as "under construction" rather than empty. Dedup on tile so
+  // two units targeting the same plot don't stack markers.
+  const sites = new Set<string>();
+  for (const id in world.units) {
+    const job = world.units[id]!.buildJob;
+    if (!job) continue;
+    const { x, y } = job.at;
+    if (x < r.x0 || x > r.x1 || y < r.y0 || y > r.y1) continue;
+    const key = `${x},${y}`;
+    if (sites.has(key)) continue;
+    sites.add(key);
+    parts.push(`<g transform="translate(${x} ${y})">${constructionSvg(job.building)}</g>`);
+  }
+
   // Units + their destination markers (drawn on top of everything).
   for (const id in world.units) {
     const u = world.units[id]!;
@@ -289,6 +315,13 @@ function updateInfo(info: HTMLElement): void {
   }
   info.hidden = false;
 
+  // A unit chopping/mining/crafting/building is "busy": its job is
+  // non-interruptible, so craft/build buttons are disabled and a ✕ appears to
+  // cancel. A plain move / idle is NOT busy (still freely re-commandable).
+  const busy = !!(u.job || u.craftJob || u.buildJob);
+  const activeCraft = u.craftJob?.recipe;
+  const activeBuild = u.buildJob?.building;
+
   const doing = u.craftJob
     ? `crafting ${RECIPES[u.craftJob.recipe]?.label ?? u.craftJob.recipe}`
     : u.buildJob
@@ -308,43 +341,131 @@ function updateInfo(info: HTMLElement): void {
     ? u.tools.map((t) => `<span class="inv-item tool">${RECIPES[t]?.label ?? t}</span>`).join('')
     : `<span class="muted">none</span>`;
 
+  // Stats row: HP, armor, and current vs. base move speed (encumbrance drops the
+  // effective speed; see stats.ts). Rounded for display only.
+  const hp = Math.round(u.hp ?? 100);
+  const maxHp = Math.round(u.maxHp ?? 100);
+  const armor = u.armor ?? 0;
+  const eff = Math.round(effectiveSpeed(u) * 100) / 100;
+  const base = Math.round(baseSpeed() * 100) / 100;
+  const slowed = eff < base - 0.001;
+  const statsHtml =
+    `<span class="stat">❤ ${hp}/${maxHp}</span>` +
+    `<span class="stat">🛡 ${armor}</span>` +
+    `<span class="stat${slowed ? ' stat-warn' : ''}">🏃 ${eff}${slowed ? `/${base}` : ''} t/s</span>`;
+
+  // Bag fill bar: green→yellow→red→black by fraction of capacity (see bagLevel).
+  const ratio = encumbrance(u);
+  const load = Math.round(unitLoad(u) * 10) / 10;
+  const cap = unitCapacity(u);
+  const level = bagLevel(ratio);
+  const fillPct = Math.min(100, Math.round(ratio * 100));
+  const bagHtml =
+    `<div class="bag-bar" title="${load} / ${cap}"><div class="bag-fill lvl-${level}" style="width:${fillPct}%"></div></div>` +
+    `<span class="bag-num">${load}/${cap}</span>`;
+
   // A recipe/building button is enabled only if the unit can pay for it (and,
-  // for tools, doesn't already own it). data-* attrs drive the delegated click.
+  // for tools, doesn't already own it) AND the unit isn't busy on another job.
+  // The in-progress recipe/building is marked `active` (a live highlight).
   const craftBtns = RECIPE_IDS.map((rid) => {
     const rec = RECIPES[rid]!;
     const owned = u.tools.includes(rid);
     const afford = canAfford(u.inventory, rec.inputs);
-    const dis = owned || !afford ? 'disabled' : '';
+    const active = activeCraft === rid ? 'active' : '';
+    const dis = owned || !afford || busy ? 'disabled' : '';
     const note = owned ? 'have it' : costLabel(rec.inputs);
-    return `<button class="menu-btn" data-craft="${rid}" ${dis}>${rec.label}<span class="menu-cost">${note}</span></button>`;
+    return `<button class="menu-btn ${active}" data-craft="${rid}" ${dis}>${rec.label}<span class="menu-cost">${note}</span></button>`;
   }).join('');
 
   const buildBtns = BUILDING_IDS.map((bid) => {
     const def = BUILDINGS[bid]!;
     const afford = canAfford(u.inventory, def.inputs);
-    const active = pendingBuild === bid ? 'active' : '';
-    const dis = afford ? '' : 'disabled';
+    const active = pendingBuild === bid || activeBuild === bid ? 'active' : '';
+    const dis = !afford || busy ? 'disabled' : '';
     return `<button class="menu-btn ${active}" data-build="${bid}" ${dis}>${def.label}<span class="menu-cost">${costLabel(def.inputs)}</span></button>`;
   }).join('');
+
+  // Progress bar for the timed jobs (craft/build). The fill width + meta text
+  // are refreshed each snapshot by updateProgress WITHOUT rebuilding the panel,
+  // so the timer animates while the buttons stay clickable.
+  const timed = u.craftJob ?? u.buildJob;
+  const progressHtml = timed
+    ? `<div class="job-progress"><div class="job-fill"></div></div><div class="job-meta"></div>`
+    : '';
+
+  // ✕ cancel: only for a busy (non-interruptible) unit. Idle/moving units have
+  // nothing to cancel, so it's absent then.
+  const cancelBtn = busy
+    ? `<button class="sel-cancel" data-cancel="1" title="Cancel action" aria-label="Cancel action">✕</button>`
+    : '';
 
   const hint = pendingBuild
     ? `<div class="sel-hint">Click a tile to place <b>${BUILDINGS[pendingBuild]?.label ?? pendingBuild}</b> · Esc to cancel</div>`
     : '';
 
-  // Everything the panel renders is derived from these; if none changed, the
-  // existing DOM is already correct — leaving it untouched keeps clicks clean.
-  const sig = JSON.stringify([u.id, u.pos, doing, u.inventory, u.tools, pendingBuild ?? '']);
+  // Everything the panel's STRUCTURE derives from; if none changed, the existing
+  // DOM is already correct — leaving it untouched keeps clicks clean. Job tick
+  // `remaining`/`total` are deliberately EXCLUDED (they change ~10×/s) — the
+  // progress bar is patched separately by updateProgress instead of rebuilt.
+  const sig = JSON.stringify([
+    u.id,
+    u.pos,
+    doing,
+    u.inventory,
+    u.tools,
+    pendingBuild ?? '',
+    busy,
+    hp,
+    maxHp,
+    armor,
+  ]);
   if (sig === infoSig) return;
   infoSig = sig;
 
   info.innerHTML =
     `<div class="sel-head"><b>${u.id}</b> <span class="muted">(${u.pos.x}, ${u.pos.y})</span>` +
-    ` <span class="sel-doing">${doing}</span></div>` +
+    ` <span class="sel-doing">${doing}</span>${cancelBtn}</div>` +
+    `<div class="sel-stats">${statsHtml}</div>` +
     `<div class="sel-row"><span class="sel-label">Tools</span>${toolsHtml}</div>` +
-    `<div class="sel-row"><span class="sel-label">Bag</span>${invHtml}</div>` +
+    `<div class="sel-row"><span class="sel-label">Bag</span>${bagHtml}</div>` +
+    `<div class="sel-row"><span class="sel-label">Items</span>${invHtml}</div>` +
+    progressHtml +
     `<div class="menu-title">Craft</div><div class="menu-grid">${craftBtns}</div>` +
     `<div class="menu-title">Build</div><div class="menu-grid">${buildBtns}</div>` +
     hint;
+
+  // Seed the freshly-built progress bar with its current values.
+  updateProgress(info);
+}
+
+/** Patch ONLY the craft/build progress bar (fill width + elapsed/remaining +
+ *  cost) in place, without rebuilding the panel — so the timer animates every
+ *  snapshot while the craft/build/cancel buttons stay intact for clicking. A
+ *  no-op when the selected unit has no timed job (the bar isn't in the DOM). */
+function updateProgress(info: HTMLElement): void {
+  const fill = info.querySelector<HTMLElement>('.job-fill');
+  const meta = info.querySelector<HTMLElement>('.job-meta');
+  if (!fill || !meta) return;
+
+  const id = selection.get().unitId;
+  const u = id ? game.get().world?.units[id] : undefined;
+  const job = u?.craftJob ?? u?.buildJob;
+  if (!job) return;
+
+  const total = job.total && job.total > 0 ? job.total : job.remaining;
+  const done = total > 0 ? Math.max(0, Math.min(1, 1 - job.remaining / total)) : 0;
+  fill.style.width = `${Math.round(done * 100)}%`;
+
+  const secs = (t: number): string => `${Math.max(0, Math.round((t / BASE_TPS) * 10) / 10)}s`;
+  const label = u?.craftJob
+    ? `${RECIPES[u.craftJob.recipe]?.label ?? u.craftJob.recipe}`
+    : `${BUILDINGS[u!.buildJob!.building]?.label ?? u!.buildJob!.building}`;
+  const cost = u?.craftJob
+    ? costLabel(RECIPES[u.craftJob.recipe]?.inputs ?? {})
+    : costLabel(BUILDINGS[u!.buildJob!.building]?.inputs ?? {});
+  meta.textContent =
+    `${label} · ${secs(total - job.remaining)} / ${secs(total)} · ${secs(job.remaining)} left` +
+    (cost ? ` · ${cost}` : '');
 }
 
 /** Can this inventory cover a cost map? Mirrors sim.canAfford for UI gating. */
@@ -470,11 +591,15 @@ function attachMenu(info: HTMLElement): void {
   );
 
   info.addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-craft],[data-build]');
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-craft],[data-build],[data-cancel]');
     if (!btn) return;
     const selId = selection.get().unitId;
     if (!selId) return;
-    if (btn.dataset.craft) {
+    if (btn.dataset.cancel) {
+      // Stop the unit's current non-interruptible job (refunds craft inputs).
+      sendAction({ type: 'cancel', unitId: selId });
+      selection.set({ pendingBuild: undefined });
+    } else if (btn.dataset.craft) {
       sendAction({ type: 'craft', unitId: selId, recipe: btn.dataset.craft });
       selection.set({ pendingBuild: undefined });
     } else if (btn.dataset.build) {

@@ -208,6 +208,37 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .inv-item.tool { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
 .muted { color: var(--muted); }
 
+/* ---- unit stats + bag fill + cancel + job progress ---- */
+.sel-cancel {
+  margin-left: 6px; width: 18px; height: 18px; flex: none; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, #e5484d 22%, transparent);
+  border: 1px solid color-mix(in srgb, #e5484d 55%, var(--border));
+  border-radius: 5px; color: #ff9ea0; font-size: 11px; line-height: 1; cursor: pointer;
+}
+.sel-cancel:hover { background: color-mix(in srgb, #e5484d 40%, transparent); color: #fff; }
+.sel-stats { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 7px; }
+.sel-stats .stat {
+  font-size: 11px; font-variant-numeric: tabular-nums; color: var(--fg);
+}
+.sel-stats .stat-warn { color: #e0b23c; }
+.bag-bar {
+  flex: 1; min-width: 90px; height: 9px; border-radius: 999px;
+  background: #0f1117; border: 1px solid var(--border); overflow: hidden;
+}
+.bag-fill { height: 100%; border-radius: 999px; transition: width 0.2s linear, background 0.2s linear; }
+.bag-fill.lvl-green { background: #52c785; }
+.bag-fill.lvl-yellow { background: #e0c53c; }
+.bag-fill.lvl-red { background: #e5844b; }
+.bag-fill.lvl-black { background: #111318; border-right: 1px solid #444; }
+.bag-num { font-size: 10px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.job-progress {
+  margin-top: 9px; height: 7px; border-radius: 999px;
+  background: #0f1117; border: 1px solid var(--border); overflow: hidden;
+}
+.job-fill { height: 100%; width: 0; border-radius: 999px; background: var(--accent); transition: width 0.2s linear; }
+.job-meta { margin-top: 4px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
 /* ---- craft/build menu (inside the selected-unit overlay) ---- */
 .menu-title {
   font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;

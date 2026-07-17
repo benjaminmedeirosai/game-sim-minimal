@@ -64,6 +64,22 @@ export function buildingSvg(type: string, ghost = false): string {
   );
 }
 
+/** A work-in-progress construction site, drawn while a unit is building here
+ *  (before the finished structure exists). A ghosted preview of the target
+ *  building under a dashed hazard outline + a little corner marker, so players
+ *  see intent the moment work starts. */
+export function constructionSvg(type: string): string {
+  return (
+    `<g opacity="0.9">` +
+    buildingSvg(type, true) +
+    `<rect x="0.12" y="0.12" width="0.76" height="0.76" rx="0.05" fill="none" ` +
+    `stroke="#e0b23c" stroke-width="0.05" stroke-dasharray="0.12 0.08" opacity="0.85"/>` +
+    `<rect x="0.4" y="0.06" width="0.2" height="0.14" rx="0.02" fill="#e0b23c"/>` +
+    `<path d="M0.44 0.13 h0.12 M0.5 0.08 v0.1" stroke="#3a2c0a" stroke-width="0.02"/>` +
+    `</g>`
+  );
+}
+
 function ore(type: string): string {
   const def = ORES[type] ?? ORES.iron!;
   const body =
