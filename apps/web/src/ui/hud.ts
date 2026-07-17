@@ -51,8 +51,12 @@ function renderNetwork(cp: ClientPerfState): string {
   const rows: [string, string][] = [
     ['latency (rtt)', cp.latencyMS !== undefined ? `${round(cp.latencyMS)} ms` : 'n/a'],
     ['snapshots', `${round(cp.snapshotsPerSec)} /s`],
-    ['snapshot size', cp.snapshotKB !== undefined ? `${round(cp.snapshotKB)} KB` : 'n/a'],
-    ['wire (uncompressed)', cp.wireKBps !== undefined ? `${round(cp.wireKBps)} KB/s` : 'n/a'],
+    ['snapshot (raw)', cp.snapshotKB !== undefined ? `${round(cp.snapshotKB)} KB` : 'n/a'],
+    ['snapshot (wire)', cp.snapshotWireKB !== undefined ? `${round(cp.snapshotWireKB)} KB` : 'n/a'],
+    ['compression', cp.compressRatio !== undefined ? `×${round(cp.compressRatio)}` : 'n/a'],
+    ['chunks / snapshot', cp.chunksPerSnapshot !== undefined ? String(cp.chunksPerSnapshot) : 'n/a'],
+    ['wire (raw)', cp.wireKBps !== undefined ? `${round(cp.wireKBps)} KB/s` : 'n/a'],
+    ['wire (actual)', cp.wireActualKBps !== undefined ? `${round(cp.wireActualKBps)} KB/s` : 'n/a'],
   ];
   return `<h2 class="mt">Network</h2>${grid(rows)}`;
 }

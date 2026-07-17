@@ -187,8 +187,12 @@ export function connect(name: string, allowOthers: boolean): void {
       // off the event-loop, then dispatch. Decompression is async, so the
       // snapshot handler guards against an older frame landing after a newer one.
       if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+        // The byteLength here IS the compressed on-wire size of this frame —
+        // pass it through so the snapshot handler can report the real wire cost.
+        const wireBytes =
+          raw instanceof ArrayBuffer ? raw.byteLength : (raw as ArrayBufferView).byteLength;
         inflate(raw as ArrayBuffer | ArrayBufferView)
-          .then((msg) => handleHostMsg(msg as HostMsg))
+          .then((msg) => handleHostMsg(msg as HostMsg, wireBytes))
           .catch((err) => console.error('failed to inflate host message', err));
       } else {
         handleHostMsg(raw as HostMsg);
@@ -228,7 +232,7 @@ async function inflate(buf: ArrayBuffer | ArrayBufferView): Promise<unknown> {
   return JSON.parse(text);
 }
 
-function handleHostMsg(msg: HostMsg): void {
+function handleHostMsg(msg: HostMsg, wireBytes = 0): void {
   switch (msg.m) {
     case 'welcome':
       // Accepted. NOW we're truly connected: stash the account's saved camera
@@ -257,10 +261,10 @@ function handleHostMsg(msg: HostMsg): void {
       // A new world (different id) always applies and resets the tick baseline.
       const w = msg.world;
       if (w.id === lastWorldId && w.tick < lastSnapshotTick) break;
-      // Logical (uncompressed) world size — what the perf panel reports. The
-      // wire payload is now gzipped (~20× smaller); this is still the useful
-      // "how heavy is the world" number and what a delta pass would target.
-      recordSnapshot(JSON.stringify(msg).length);
+      // Report both sizes: the logical world size (raw JSON) and the actual
+      // gzipped bytes that arrived (wireBytes, 0 if this snapshot was small
+      // enough to skip compression). The panel shows the ratio + chunk count.
+      recordSnapshot(JSON.stringify(msg).length, wireBytes);
       onSnapshot(w); // sets lastWorldId on a new world
       lastSnapshotTick = w.tick;
       actionLog.set(() => msg.actionLog); // replace (updater form: array, not a merge)
