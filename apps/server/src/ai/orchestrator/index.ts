@@ -13,6 +13,8 @@ import type {
   AiExchange,
   ConversationTurn,
   MemoryOp,
+  PlayerCameraView,
+  ViewCommand,
   World,
 } from '@game/shared';
 
@@ -28,6 +30,9 @@ const ORCHESTRATOR_OPTS: ChatOptions = { temperature: 0.6, think: false };
 
 export interface RunResult {
   actions: Action[];
+  /** Camera moves the model requested for the submitter (applied client-side by
+   *  the host, not through the sim). Empty when the view was left alone. */
+  viewCommands: ViewCommand[];
   input: AiExchange['input'];
   output: AiExchange['output'];
   ms: number;
@@ -46,6 +51,9 @@ export interface OrchestratorContext {
   history?: ConversationTurn[];
   /** The colony's saved memory (standing player preferences) at send-time. */
   memory?: string[];
+  /** What each online player currently sees on screen, so the model can orient
+   *  replies (and setView moves) relative to the human. */
+  cameras?: PlayerCameraView[];
   /** The active voice style id (or 'off') at send-time. */
   voice?: string;
 }
@@ -73,7 +81,7 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
   let worldAtSend: World | undefined;
 
   const build = (): ReturnType<typeof assemble>['messages'] => {
-    const { world, roster = [], history = [], memory = [], voice } = context();
+    const { world, roster = [], history = [], memory = [], cameras = [], voice } = context();
     worldAtSend = world;
     const { messages, raw, parts } = assemble(world, {
       command,
@@ -81,6 +89,7 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
       roster,
       history,
       memory,
+      cameras,
       voice,
     });
     record = { command, onBehalfOf: submitter, raw, parts };
@@ -89,21 +98,32 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
 
   try {
     const { text, ms, stats } = await ollama.chatDeferred(build, ORCHESTRATOR_OPTS);
-    const { actions, msg, memoryOps } = parseResponse(text, worldAtSend!);
+    const { actions, viewCommands, rejected, msg, memoryOps } = parseResponse(text, worldAtSend!);
     const output: AiExchange['output'] = { raw: text, actions, stats };
     if (msg) output.msg = msg;
     if (memoryOps !== undefined) output.memoryOps = memoryOps;
-    return { actions, input: record!, output, ms, memoryOps };
+    if (rejected.length) output.warnings = rejected;
+    if (viewCommands.length) output.viewCommands = viewCommands;
+    return { actions, viewCommands, input: record!, output, ms, memoryOps };
   } catch (err) {
     // If we failed before assembling (e.g. daemon down), build a record now so
     // the exchange is still auditable.
     if (!record) {
-      const { world, roster = [], history = [], memory = [], voice } = context();
-      const { raw, parts } = assemble(world, { command, submitter, roster, history, memory, voice });
+      const { world, roster = [], history = [], memory = [], cameras = [], voice } = context();
+      const { raw, parts } = assemble(world, {
+        command,
+        submitter,
+        roster,
+        history,
+        memory,
+        cameras,
+        voice,
+      });
       record = { command, onBehalfOf: submitter, raw, parts };
     }
     return {
       actions: [],
+      viewCommands: [],
       input: record,
       output: { raw: '', actions: [], error: (err as Error).message },
       ms: 0,
@@ -121,11 +141,12 @@ export function orchestratorConfig(
     memory?: string[];
     roster?: string[];
     history?: ConversationTurn[];
+    cameras?: PlayerCameraView[];
     voice?: string;
   } = {},
 ): AiConfigView {
-  const { memory = [], roster = [], history = [], voice = DEFAULT_VOICE } = ctx;
-  const { raw, parts } = assemble(world, { memory, roster, history, voice });
+  const { memory = [], roster = [], history = [], cameras = [], voice = DEFAULT_VOICE } = ctx;
+  const { raw, parts } = assemble(world, { memory, roster, history, cameras, voice });
   return {
     agent: ORCHESTRATOR_AGENT,
     model: ollama.model,

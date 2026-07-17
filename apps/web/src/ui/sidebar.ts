@@ -5,7 +5,7 @@
 // colony conversation (one transcript, everyone's commands + the AI's replies)
 // rendered straight from aiData — completed exchanges followed by any pending
 // commands still awaiting the model.
-import { ORCHESTRATOR_AGENT, describeAction } from '@game/shared';
+import { ORCHESTRATOR_AGENT, describeAction, describeView } from '@game/shared';
 import type { AiExchange, AiPending } from '@game/shared';
 import { aiData, sendAiClear, sendCommand } from '../net/client';
 import { mountActionsPanel } from './actionsPanel';
@@ -60,7 +60,23 @@ function chatTurn(x: AiExchange): string {
     ? `<div class="chat-mem"><span class="chat-mem-icon" title="AI memory updated">🧠</span></div>`
     : '';
 
-  return `<div class="chat-turn">${userBubble(who, x.input.command)}${reply}${mem}${acts}${err}</div>`;
+  // A warning badge flags a response we had to partly reject (bad unit id,
+  // out-of-bounds target, un-parseable output). The reasons themselves live in
+  // the AI History window; here we just surface that something was dropped.
+  const warn = x.output.warnings?.length
+    ? `<div class="chat-mem"><span class="chat-mem-icon chat-warn-icon" ` +
+      `title="${esc(x.output.warnings.join('\n'))}">⚠️</span></div>`
+    : '';
+
+  // A note that the AI moved this player's camera (setView) rather than the
+  // world — shown as a compact line like "Moved your view → (12, 8)".
+  const view = x.output.viewCommands?.length
+    ? `<div class="chat-acts">${x.output.viewCommands
+        .map((v) => `<span class="chat-act chat-view">👁 ${esc(describeView(v))}</span>`)
+        .join('')}</div>`
+    : '';
+
+  return `<div class="chat-turn">${userBubble(who, x.input.command)}${reply}${mem}${warn}${view}${acts}${err}</div>`;
 }
 
 /** A command that's landed but hasn't been answered yet: the submitter's bubble

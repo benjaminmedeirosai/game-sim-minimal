@@ -22,6 +22,7 @@ import type {
   HostMsg,
   MemoryOp,
   MemoryRevision,
+  PlayerCameraView,
   World,
   WorldSettings,
 } from '@game/shared';
@@ -104,8 +105,19 @@ export class Host {
   // Set whenever persisted state changes; the autosave loop only writes when
   // it's true, so a paused/idle world isn't rewritten every interval.
   private dirty = false;
+  // What each connected player currently sees on screen, keyed by peerId. Pure
+  // view-state (never in World, never through applyAction) — reported by clients
+  // via `camera` messages and fed into the prompt so the model can orient
+  // replies/moves relative to each human. Cleared on disconnect (forgetPlayer).
+  private playerCameras = new Map<string, PlayerCameraView>();
 
-  constructor(private readonly broadcast: (msg: HostMsg) => void) {
+  constructor(
+    private readonly broadcast: (msg: HostMsg) => void,
+    // Deliver a message to ONE peer (the host doesn't own connections; index.ts
+    // supplies this from its conns map). Used to move only the submitter's
+    // camera in response to a setView the model produced.
+    private readonly sendTo: (peerId: string, msg: HostMsg) => void,
+  ) {
     // Resume the previous session if one is on disk; otherwise seed a fresh
     // world. This is what stops the world from reseeding on every restart —
     // it only regenerates on an explicit New World (or when no save exists).
@@ -195,6 +207,35 @@ export class Host {
     return turns.slice(-CONVERSATION_TURNS);
   }
 
+  /** Record what a player currently sees on screen, from their `camera` report.
+   *  Pure view-state (kept off the World). Sanitizes to finite numbers and
+   *  clamps the center into world bounds; a report with any non-finite field is
+   *  ignored. Keyed by peerId so a reconnecting/renaming player overwrites their
+   *  own entry, and dropped on disconnect (forgetPlayer). */
+  setPlayerCamera(peerId: string, name: string, cam: { cx: number; cy: number; w: number; h: number }): void {
+    const { cx, cy, w, h } = cam;
+    if (![cx, cy, w, h].every((n) => typeof n === 'number' && Number.isFinite(n))) return;
+    this.playerCameras.set(peerId, {
+      name,
+      cx: Math.max(0, Math.min(this.world.width - 1, cx)),
+      cy: Math.max(0, Math.min(this.world.height - 1, cy)),
+      w: Math.max(0, w),
+      h: Math.max(0, h),
+    });
+  }
+
+  /** Forget a disconnected player's camera so it stops feeding the prompt. */
+  forgetPlayer(peerId: string): void {
+    this.playerCameras.delete(peerId);
+  }
+
+  /** The camera reports to feed the prompt, limited to players currently on the
+   *  roster (a stale entry can't leak a departed player's view into context). */
+  private camerasFor(roster: string[]): PlayerCameraView[] {
+    const online = new Set(roster);
+    return [...this.playerCameras.values()].filter((c) => online.has(c.name));
+  }
+
   /** Route a natural-language command through the orchestrator, record the full
    *  exchange, then dispatch each resulting action attributed to the AI (with
    *  the requesting player noted). Serial by virtue of the AI client's queue.
@@ -224,6 +265,7 @@ export class Host {
         roster,
         history: this.recentConversation(),
         memory: this.aiMemory,
+        cameras: this.camerasFor(roster),
         voice: this.aiVoice,
       }),
     });
@@ -259,6 +301,22 @@ export class Host {
 
     const aiSource: ActionSource = { kind: 'ai', agent: ORCHESTRATOR_AGENT, onBehalfOf };
     for (const action of result.actions) this.dispatch(action, aiSource);
+
+    // A setView moves ONLY the requesting player's on-screen camera, and only
+    // when a real player issued the command (an autonomous/AI-triggered command
+    // has no peer to move). This never touches the World — it's a targeted view
+    // nudge delivered to that one peer. If the model emitted several, the last
+    // one wins (its final intent).
+    if (source.kind === 'player' && result.viewCommands.length) {
+      const v = result.viewCommands[result.viewCommands.length - 1];
+      const msg: HostMsg = { m: 'setCamera' };
+      if (v.center) {
+        msg.cx = v.center.x;
+        msg.cy = v.center.y;
+      }
+      if (v.tilesAcross != null) msg.tilesAcross = v.tilesAcross;
+      this.sendTo(source.peerId, msg);
+    }
   }
 
   /** The (mutable) pending queue for the orchestrator, created on first use. */
@@ -355,6 +413,7 @@ export class Host {
         memory: this.aiMemory,
         roster,
         history: this.recentConversation(),
+        cameras: this.camerasFor(roster),
         voice: this.aiVoice,
       }),
       pending: this.aiPending.get(agent) ?? [],

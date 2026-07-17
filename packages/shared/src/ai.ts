@@ -2,7 +2,7 @@
 // sent to a model and everything it returned. These are transport/inspection
 // types — the host produces them, browsers only display them. Prompt assembly
 // itself lives host-side in apps/server/src/ai.
-import type { Action } from './actions.js';
+import type { Action, ViewCommand } from './actions.js';
 
 /** The one built-in agent id. Lives here (not server-only) so the web client
  *  can request/auto-refresh its history without duplicating the string. */
@@ -47,6 +47,19 @@ export interface MemoryRevision {
 export interface ConversationTurn {
   who: string;
   text: string;
+}
+
+/** What one player currently sees on screen, fed into the prompt so the model
+ *  can orient replies relative to the human (e.g. "the lake to your north"). The
+ *  host builds these from `camera` reports (see protocol.ts): `name` is the
+ *  reporting player; `cx,cy` is the view center and `w,h` the visible extent,
+ *  all in world tiles. */
+export interface PlayerCameraView {
+  name: string;
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
 }
 
 /** A command that's been accepted by the host but not yet answered by the
@@ -139,6 +152,15 @@ export interface AiExchange {
     msg?: string;
     /** Set when the call or parse failed. */
     error?: string;
+    /** Non-fatal problems with an otherwise-usable response: items we had to
+     *  reject (unknown unit, out-of-bounds target, unknown recipe) or a response
+     *  that didn't parse as JSON. Surfaced with a ⚠️ in the chat + history so a
+     *  malformed plan is visible instead of silently dropped. Absent when clean. */
+    warnings?: string[];
+    /** Camera moves the model requested on the submitter's behalf (setView).
+     *  Applied client-side (not through applyAction); shown in history/chat.
+     *  Absent when the model didn't touch the view — the common case. */
+    viewCommands?: ViewCommand[];
     /** Model telemetry for this call (tokens, per-stage timings). Absent on a
      *  failure that never reached the model. */
     stats?: AiStats;

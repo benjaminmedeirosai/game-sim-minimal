@@ -70,18 +70,27 @@ function broadcast(msg: HostMsg): void {
   }
 }
 
+/** Send to one peer by id, tolerating an unknown/dead channel. Lets the host
+ *  target a single player (e.g. a setCamera nudge) without owning connections. */
+function sendTo(peerId: string, msg: HostMsg): void {
+  const conn = conns.get(peerId);
+  if (conn) safeSend(conn, msg);
+}
+
 /** Remove a peer (idempotent) and tell everyone still connected. */
 function dropPeer(id: string, reason: string): void {
   if (!roster.has(id) && !conns.has(id)) return;
   roster.remove(id);
   conns.delete(id);
+  host.forgetPlayer(id); // stop reporting a gone player's camera to the model
   console.log(`[server] peer left: ${id} (${reason})`);
   broadcast({ m: 'roster', roster: roster.list() });
 }
 
 // The authoritative simulation. It broadcasts snapshots (on world change) and
-// stats (~1×/sec) through our resilient broadcast.
-const host = new Host(broadcast);
+// stats (~1×/sec) through our resilient broadcast; sendTo lets it nudge one
+// player's camera (setView) without owning the connection map.
+const host = new Host(broadcast, sendTo);
 
 // Persist the session on the way out so a graceful stop — Ctrl-C, or tsx's
 // SIGTERM when it restarts on a file change — resumes exactly where it left
@@ -183,6 +192,9 @@ peer.on('connection', (conn) => {
     } else if (msg.m === 'aiMemoryEdit') {
       const by = roster.list().find((p) => p.id === conn.peer)?.name ?? conn.peer;
       host.editMemory(msg.agent, msg.ops, by);
+    } else if (msg.m === 'camera') {
+      const name = roster.list().find((p) => p.id === conn.peer)?.name ?? conn.peer;
+      host.setPlayerCamera(conn.peer, name, msg);
     } else if (msg.m === 'ping') {
       safeSend(conn, { m: 'pong', t: msg.t }); // echo for RTT measurement
     }

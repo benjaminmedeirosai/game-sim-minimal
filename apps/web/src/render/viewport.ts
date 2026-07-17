@@ -130,6 +130,17 @@ export function setTilesAcross(tilesAcross: number): void {
   camera.set({ tilesAcross: clampTilesAcross(tilesAcross) });
 }
 
+/** The camera as the AI needs it: center + the visible extent in tiles. Width is
+ *  `tilesAcross`; height is derived from the container's aspect ratio (which the
+ *  host can't know), so the model can approximate exactly what the human sees.
+ *  Reported to the host via a `camera` message (see net/client.ts). */
+export function currentView(): { cx: number; cy: number; w: number; h: number } {
+  const cam = camera.get();
+  const w = cam.tilesAcross;
+  const h = cam.tilesAcross / aspect();
+  return { cx: cam.cx, cy: cam.cy, w, h };
+}
+
 /** Recenter the camera on the middle of the world (keeps current zoom). */
 export function centerOnWorld(): void {
   const world = game.get().world;

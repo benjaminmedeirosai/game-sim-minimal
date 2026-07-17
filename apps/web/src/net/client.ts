@@ -19,7 +19,7 @@ import type {
   WorldSettings,
 } from '@game/shared';
 import { camera, game } from '../state/game';
-import { clampTilesAcross, refreshViewportInfo } from '../render/viewport';
+import { clampTilesAcross, currentView, refreshViewportInfo } from '../render/viewport';
 import { recordLatency, recordSnapshot } from '../state/clientPerf';
 
 export interface NetState {
@@ -64,6 +64,48 @@ let lastWorldId: string | undefined;
 let pingTimer: ReturnType<typeof setInterval> | undefined;
 
 const PING_INTERVAL_MS = 2000;
+
+// How long panning/zooming must settle before we report the camera to the host.
+// The report is pure orientation info for the AI, not gameplay, so a lazy 2s
+// trailing debounce keeps a smooth pan from spamming the channel; an action send
+// flushes it immediately (see sendAction) so a command always carries a fresh
+// view "for free".
+const CAMERA_DEBOUNCE_MS = 2000;
+let cameraTimer: ReturnType<typeof setTimeout> | undefined;
+// Last camera we actually reported, as a comparison key, so an unchanged view
+// (or the echo from a host-driven setCamera) doesn't re-send.
+let lastCameraKey: string | undefined;
+
+/** Report the current camera to the host now, unless it's unchanged since the
+ *  last report (or we're not connected). Values are rounded to whole tiles — the
+ *  AI only needs an approximate view, and rounding makes the unchanged-guard
+ *  effective during sub-tile panning. */
+function sendCamera(): void {
+  if (!conn?.open) return;
+  const v = currentView();
+  const cx = Math.round(v.cx);
+  const cy = Math.round(v.cy);
+  const w = Math.max(1, Math.round(v.w));
+  const h = Math.max(1, Math.round(v.h));
+  const key = `${cx},${cy},${w},${h}`;
+  if (key === lastCameraKey) return;
+  lastCameraKey = key;
+  send({ m: 'camera', cx, cy, w, h });
+}
+
+/** Trailing-debounced camera report: called on every camera change, actually
+ *  sends once movement settles for CAMERA_DEBOUNCE_MS. */
+function scheduleCameraSend(): void {
+  if (cameraTimer) clearTimeout(cameraTimer);
+  cameraTimer = setTimeout(() => {
+    cameraTimer = undefined;
+    sendCamera();
+  }, CAMERA_DEBOUNCE_MS);
+}
+
+// Report the camera (debounced) whenever it pans or zooms. subscribe() fires
+// once immediately; that early call is a no-op (not connected yet).
+camera.subscribe(scheduleCameraSend);
 
 function startPinging(): void {
   stopPinging();
@@ -160,6 +202,19 @@ function handleHostMsg(msg: HostMsg): void {
       // waiting for the player to reopen anything.
       sendAiHistoryReq(msg.agent);
       break;
+    case 'setCamera': {
+      // The AI moved THIS player's camera (setView) in response to their own
+      // command — pan and/or zoom, whatever it sent. Pure view-state: clamp the
+      // zoom the same way manual zoom does, and keep the center inside the world.
+      const world = game.get().world;
+      const cam = camera.get();
+      const next: Partial<typeof cam> = {};
+      if (msg.cx != null) next.cx = world ? Math.max(0, Math.min(world.width, msg.cx)) : msg.cx;
+      if (msg.cy != null) next.cy = world ? Math.max(0, Math.min(world.height, msg.cy)) : msg.cy;
+      if (msg.tilesAcross != null) next.tilesAcross = clampTilesAcross(msg.tilesAcross);
+      if (Object.keys(next).length) camera.set(next);
+      break;
+    }
     case 'pong':
       recordLatency(Date.now() - msg.t); // round-trip time
       break;
@@ -196,6 +251,13 @@ export function sendSpeed(multiplier: number): void {
 
 export function sendAction(action: Action): void {
   send({ m: 'action', action });
+  // Piggyback a fresh camera report on the action (free orientation for the AI)
+  // and cancel the pending debounced send — this one supersedes it.
+  if (cameraTimer) {
+    clearTimeout(cameraTimer);
+    cameraTimer = undefined;
+  }
+  sendCamera();
 }
 
 export function sendCommand(text: string): void {

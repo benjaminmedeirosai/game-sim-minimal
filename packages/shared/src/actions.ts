@@ -18,6 +18,24 @@ export type Action =
 
 export type ActionType = Action['type'];
 
+// --- View commands -------------------------------------------------------
+// A camera move the AI can request on a player's behalf. Deliberately NOT part
+// of the Action union: an Action mutates the authoritative world (and must stay
+// pure + reproducible), whereas this only nudges ONE client's on-screen camera.
+// It never reaches applyAction — the host routes it to the requesting player as
+// a `setCamera` HostMsg. `center` pans; `tilesAcross` sets zoom (how many tiles
+// wide to show — smaller = closer). At least one is present.
+export type ViewCommand = { type: 'setView'; center?: Coord; tilesAcross?: number };
+
+/** A short human-readable label for a view command, for the AI history + chat
+ *  (e.g. "View → (12, 8), zoom 18 across"). Mirrors describeAction. */
+export function describeView(v: ViewCommand): string {
+  const bits: string[] = [];
+  if (v.center) bits.push(`View → (${v.center.x}, ${v.center.y})`);
+  if (v.tilesAcross != null) bits.push(`zoom ${v.tilesAcross} across`);
+  return bits.length ? bits.join(', ') : 'View unchanged';
+}
+
 // --- Attribution ---------------------------------------------------------
 // WHO submitted an action. This is metadata that rides ALONGSIDE the action in
 // the host's log — it is deliberately NOT part of the Action itself, so the

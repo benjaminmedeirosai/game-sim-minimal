@@ -42,6 +42,12 @@ export type ClientMsg =
   // Manually edit the colony's standing memory from the Memory tab, as the same
   // add/edit/del ops the model uses (ids are the 1-based positions shown there).
   | { m: 'aiMemoryEdit'; agent: string; ops: MemoryOp[] }
+  // This player's current camera: center (cx,cy) plus the visible extent (w,h),
+  // ALL in world tiles. The client derives w,h from its zoom + aspect ratio (the
+  // host can't know the aspect). Reported debounced (~2s after panning stops) and
+  // piggybacked whenever an action is sent, so the AI can orient replies to what
+  // each human is actually looking at. Pure view metadata — never mutates the world.
+  | { m: 'camera'; cx: number; cy: number; w: number; h: number }
   // Round-trip latency probe: `t` is the client's own send time, echoed back
   // in `pong` so the client can measure RTT without any host/client clock sync.
   | { m: 'ping'; t: number };
@@ -72,5 +78,9 @@ export type HostMsg =
   // A lightweight nudge that a new exchange was recorded, so an open history
   // window can refetch. Kept payload-free to stay cheap on the broadcast path.
   | { m: 'aiEvent'; agent: string }
+  // Drive ONE player's on-screen camera (in response to their own command, e.g.
+  // "show me unit-2"). Any subset of fields: pan to (cx,cy) and/or set the zoom
+  // via tilesAcross. Client-side view state only — never touches the world.
+  | { m: 'setCamera'; cx?: number; cy?: number; tilesAcross?: number }
   // Reply to a client `ping`, echoing back its send time `t` unchanged.
   | { m: 'pong'; t: number };

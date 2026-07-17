@@ -131,6 +131,9 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   font-size: 10px; color: var(--muted); background: rgba(255,255,255,0.05);
   border-radius: 4px; padding: 1px 6px;
 }
+/* view-move chip (setView): tinted so a camera nudge reads apart from actions */
+.chat-view { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.chat-warn-icon { filter: none; }
 .chat-form { display: flex; gap: 6px; padding: 8px 0 12px; border-top: 1px solid var(--border); }
 .chat-input {
   flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border);
@@ -328,6 +331,10 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 }
 .ai-mem { margin: 6px 0 2px; }
 .ai-mem .ai-acts li { border-left-color: var(--warn); }
+/* dropped/rejected items: amber, distinct from the hard red .ai-err block */
+.ai-warn { margin: 6px 0 2px; }
+.ai-warn .ai-lbl { color: var(--warn); }
+.ai-warn .ai-acts li { border-left-color: var(--warn); color: #e8c07d; }
 .ai-stats { display: flex; flex-wrap: wrap; gap: 5px; }
 .ai-chip {
   font-size: 10px; color: var(--muted); background: #0a0c11;

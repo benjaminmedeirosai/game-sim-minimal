@@ -14,7 +14,13 @@ import {
   describeAction,
   visibleTiles,
 } from '@game/shared';
-import type { AiPromptPart, Coord, ConversationTurn, World } from '@game/shared';
+import type {
+  AiPromptPart,
+  Coord,
+  ConversationTurn,
+  PlayerCameraView,
+  World,
+} from '@game/shared';
 import type { ChatMessage } from '../types.js';
 import { voicePrompt } from './voice.js';
 
@@ -134,6 +140,26 @@ export function systemPrompt(): string {
     '  {"type":"harvest","unitId":"<id>","target":{"x":<int>,"y":<int>}}',
     '  {"type":"craft","unitId":"<id>","recipe":"<id>"}',
     '  {"type":"build","unitId":"<id>","building":"<id>","at":{"x":<int>,"y":<int>}}',
+    '  {"type":"setView","center":{"x":<int>,"y":<int>},"tilesAcross":<int>}',
+    '',
+    'Use the EXACT unitId from the world snapshot below (e.g. "unit-0"), quoted as',
+    'a string — never a bare number like 0.',
+    '',
+    'setView moves the on-screen camera of the player who gave THIS command (never',
+    'anyone else, and it does NOT change the world). Use it when they ask to see',
+    'something — "show me unit-2", "look at the lake", "zoom out". "center" pans the',
+    'view to that tile; "tilesAcross" sets the zoom = how many tiles wide to show',
+    '(smaller = zoomed in closer, larger = more of the map). Include either or both.',
+    'The "Player views" section below tells you where each player is currently',
+    'looking and how wide their view is.',
+    '',
+    'Coordinates & directions:',
+    '  - Tiles are addressed by (x, y). (0,0) is the TOP-LEFT corner of the world.',
+    '  - +x = EAST (right on screen); -x = WEST (left).',
+    '  - +y = SOUTH (down on screen); -y = NORTH (up). Larger y is further DOWN.',
+    '  - So: north/up = smaller y, south/down = larger y, east/right = larger x,',
+    '    west/left = smaller x. Use this to read a player\'s intent ("send one north")',
+    '    and to describe things relative to what they see ("the ore to your south").',
     '',
     'harvest works the object on the target tile; the verb is inferred from what',
     'is there:',
@@ -235,31 +261,37 @@ export function worldContext(world: World): string {
   const isIdle = (u: (typeof world.units)[string]): boolean =>
     !u.job && !u.craftJob && !u.buildJob;
 
+  // One compact JSON object per unit. Rendering ids as `"id":"unit-0"` (rather
+  // than in prose) removes the ambiguity that had the model emitting a bare "0";
+  // the {x,y} coord shape here also mirrors exactly what actions must send back.
   const units = Object.values(world.units).map((u) => {
-    const inv = Object.entries(u.inventory)
-      .map(([k, n]) => `${k}:${n}`)
-      .join(',') || 'empty';
-    const tools = u.tools.length ? u.tools.join(',') : 'none';
-    const busy = u.job
-      ? `${u.job.verb}@(${u.job.target.x},${u.job.target.y})`
-      : u.craftJob
-        ? `craft ${u.craftJob.recipe}`
-        : u.buildJob
-          ? `build ${u.buildJob.building}`
-          : 'idle';
-    const line = `  ${u.id} at (${u.pos.x},${u.pos.y}) inv[${inv}] tools[${tools}] ${busy}`;
-    if (!isIdle(u)) return line;
-    // Hand each idle unit its nearest target of each kind (Manhattan distance —
-    // movement is 4-connected). Models pick "nearest" badly from a raw coord
-    // list, so we precompute it; this is what stops a unit crossing the map to
-    // a far tree when a closer one exists.
-    const hints = Object.entries(cells)
-      .map(([kind, list]) => {
+    const obj: Record<string, unknown> = {
+      id: u.id,
+      pos: { x: u.pos.x, y: u.pos.y },
+      inv: u.inventory,
+      tools: u.tools,
+    };
+    if (u.job) {
+      obj.status = u.job.verb;
+      obj.at = { x: u.job.target.x, y: u.job.target.y };
+    } else if (u.craftJob) {
+      obj.status = `craft ${u.craftJob.recipe}`;
+    } else if (u.buildJob) {
+      obj.status = `build ${u.buildJob.building}`;
+    } else {
+      obj.status = 'idle';
+      // Hand each idle unit its nearest target of each kind (Manhattan distance —
+      // movement is 4-connected). Models pick "nearest" badly from a raw coord
+      // list, so we precompute it; this is what stops a unit crossing the map to
+      // a far tree when a closer one exists.
+      const nearest: Record<string, { x: number; y: number; d: number }> = {};
+      for (const [kind, list] of Object.entries(cells)) {
         const near = nearestCell(u.pos, list);
-        return near ? `${kind} (${near.cell.x},${near.cell.y}) d${near.dist}` : null;
-      })
-      .filter((h): h is string => h !== null);
-    return hints.length ? `${line}\n    nearest → ${hints.join(', ')}` : line;
+        if (near) nearest[kind] = { x: near.cell.x, y: near.cell.y, d: near.dist };
+      }
+      if (Object.keys(nearest).length) obj.nearest = nearest;
+    }
+    return `  ${JSON.stringify(obj)}`;
   });
 
   const idleIds = Object.values(world.units).filter(isIdle).map((u) => u.id);
@@ -298,7 +330,8 @@ export function worldContext(world: World): string {
   // Omitting it lets a stationary-world follow-up reuse the cache in full.
   return [
     `World ${world.width}x${world.height}.`,
-    'Units:',
+    'Units (one compact JSON object per line; "nearest" gives each idle unit its',
+    'closest target of each kind as {x,y,d} where d is the tile distance):',
     ...units,
     `Idle units, free to assign right now: ${idleIds.length ? idleIds.join(', ') : 'none'}.`,
     'Resources your units can currently see (fog of war hides the rest):',
@@ -308,6 +341,29 @@ export function worldContext(world: World): string {
     builds.length ? 'Buildings:' : 'Buildings: none',
     ...builds,
   ].join('\n');
+}
+
+/** What each player currently sees on screen, so the model can orient replies
+ *  and setView moves relative to the human (e.g. "the ore to your south"). One
+ *  line per reporting player: view center + the visible tile window. Players who
+ *  haven't reported a camera yet are simply omitted; none → a stable placeholder
+ *  so the section is always present (keeps the prompt shape steady). */
+export function playerViewsContext(cameras: PlayerCameraView[]): string {
+  if (cameras.length === 0) return '(no camera reports yet)';
+  return cameras
+    .map((c) => {
+      const w = Math.max(1, Math.round(c.w));
+      const h = Math.max(1, Math.round(c.h));
+      const cx = Math.round(c.cx);
+      const cy = Math.round(c.cy);
+      const x0 = cx - Math.floor(w / 2);
+      const y0 = cy - Math.floor(h / 2);
+      return (
+        `  ${c.name}: centered at (${cx},${cy}), showing a ${w}x${h} tile area ` +
+        `(x ${x0}..${x0 + w}, y ${y0}..${y0 + h})`
+      );
+    })
+    .join('\n');
 }
 
 /** The players sharing the colony. This is the STABLE roster only — it changes
@@ -357,6 +413,8 @@ export interface AssembleInput {
   history?: ConversationTurn[];
   /** Standing player preferences saved across calls (the model amends these). */
   memory?: string[];
+  /** What each online player currently sees on screen (for orientation). */
+  cameras?: PlayerCameraView[];
   /** Which voice style the "msg" reply should use (a VOICES id, or 'off' /
    *  undefined for no Voice section — the model then replies plainly). */
   voice?: string;
@@ -373,8 +431,8 @@ export interface AssembleInput {
  *    System (never) → Voice (only when the player switches style, rare) →
  *    Memory (rare) → Players (roster only, rare) → World
  *    (only when units actually move/harvest — often identical at rest) →
- *    Conversation (grows by one turn on EVERY command) → Command (submitter +
- *    text; every call, tiny).
+ *    Player views (changes when someone pans — small) → Conversation (grows by
+ *    one turn on EVERY command) → Command (submitter + text; every call, tiny).
  *  The subtlety: the conversation is the more reliable cache-buster — it gains a
  *  turn on every command — whereas the world is frequently unchanged between
  *  commands. So the world goes AHEAD of the conversation: when units are idle,
@@ -386,7 +444,7 @@ export function assemble(
   world: World,
   input: AssembleInput = {},
 ): { messages: ChatMessage[]; raw: string; parts: AiPromptPart[] } {
-  const { command, submitter, roster = [], history = [], memory = [], voice } = input;
+  const { command, submitter, roster = [], history = [], memory = [], cameras = [], voice } = input;
   const sys = systemPrompt();
   // The Voice section (persona for "msg") is toggleable/switchable at runtime,
   // so it lives outside the fixed system rules. When active we fold it into the
@@ -398,6 +456,7 @@ export function assemble(
   const mem = memoryContext(memory);
   const ctx = worldContext(world);
   const players = rosterContext(roster);
+  const views = playerViewsContext(cameras);
   const convo = historyContext(history);
   const cmd = commandContext(command ?? '<the player command goes here>', submitter);
 
@@ -407,6 +466,7 @@ export function assemble(
     { label: 'Memory', content: mem },
     { label: 'Players', content: players },
     { label: 'World context', content: ctx },
+    { label: 'Player views', content: views },
     { label: 'Recent conversation', content: convo },
     { label: 'Command', content: cmd },
   ];
@@ -418,6 +478,9 @@ export function assemble(
     players,
     '',
     ctx,
+    '',
+    'Player views (what each player currently sees on screen):',
+    views,
     '',
     'Recent conversation:',
     convo,

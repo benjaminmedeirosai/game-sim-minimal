@@ -7,7 +7,7 @@
 // An agent selector switches which agent you're inspecting (one today, more
 // later). Data comes from the host on demand via { m: 'aiHistoryReq' }, and an
 // open window refetches when the host reports a new exchange (aiEvents).
-import { describeAction } from '@game/shared';
+import { describeAction, describeView } from '@game/shared';
 import type {
   AiConfigView,
   AiExchange,
@@ -133,6 +133,21 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
         `<ul class="ai-acts">${x.output.memoryOps.map((o) => `<li>${opSummary(o)}</li>`).join('')}</ul>` +
         `</div>`
       : '';
+    // View moves the model made on the submitter's behalf (setView) — camera
+    // pans/zooms, distinct from world actions.
+    const views = x.output.viewCommands?.length
+      ? `<div class="ai-mem"><span class="ai-lbl">👁 moved view</span>` +
+        `<ul class="ai-acts">${x.output.viewCommands.map((v) => `<li>${esc(describeView(v))}</li>`).join('')}</ul>` +
+        `</div>`
+      : '';
+    // Non-fatal problems: items we had to reject (bad unit, out-of-bounds,
+    // unknown recipe) or an un-parseable response. Amber, distinct from the hard
+    // error block, so a partly-usable plan reads differently from a total fail.
+    const warn = x.output.warnings?.length
+      ? `<div class="ai-warn"><span class="ai-lbl">⚠️ dropped ${x.output.warnings.length}</span>` +
+        `<ul class="ai-acts">${x.output.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` +
+        `</div>`
+      : '';
     return (
       `<div class="ai-xchg">` +
       `<div class="ai-xhead"><span class="ai-cmd">${esc(x.input.command)}</span>` +
@@ -140,6 +155,8 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       statsRow(x.output.stats) +
       said +
       mem +
+      views +
+      warn +
       `<div class="ai-xcol"><span class="ai-lbl">Actions (${x.output.actions.length})</span>${acts}${err}</div>` +
       `<details class="ai-raw"><summary>model output</summary><pre>${esc(x.output.raw || '(empty)')}</pre></details>` +
       `<details class="ai-raw"><summary>prompt sent</summary><pre>${esc(x.input.raw)}</pre></details>` +

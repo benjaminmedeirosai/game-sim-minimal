@@ -6,7 +6,7 @@
 // applyAction is the final authority, but rejecting garbage here keeps the
 // audit log honest about what we actually tried to run.
 import { BUILDINGS, RECIPES } from '@game/shared';
-import type { Action, Coord, MemoryOp, World } from '@game/shared';
+import type { Action, Coord, MemoryOp, ViewCommand, World } from '@game/shared';
 import { MEMORY_MAX_LEN } from './memory.js';
 
 /** Slice out the first balanced-looking JSON value of a given bracket type and
@@ -22,13 +22,6 @@ function sliceJson(cleaned: string, open: string, close: string): unknown {
   }
 }
 
-/** Extract the first top-level JSON array from arbitrary model text. Returns
- *  the parsed value, or null if none parses. */
-function extractArray(text: string): unknown {
-  const cleaned = text.replace(/```(?:json)?/gi, '').trim();
-  return sliceJson(cleaned, '[', ']');
-}
-
 function isCoord(v: unknown, world: World): v is Coord {
   if (typeof v !== 'object' || v === null) return false;
   const c = v as Record<string, unknown>;
@@ -42,41 +35,122 @@ function isCoord(v: unknown, world: World): v is Coord {
   );
 }
 
-function validate(raw: unknown, world: World): Action | null {
-  if (typeof raw !== 'object' || raw === null) return null;
+/** Best-effort render of a candidate coord for a rejection reason (the value may
+ *  be anything the model emitted, not a valid Coord). */
+function coordStr(v: unknown): string {
+  if (v && typeof v === 'object') {
+    const c = v as Record<string, unknown>;
+    if (typeof c.x === 'number' && typeof c.y === 'number') return `(${c.x},${c.y})`;
+  }
+  return JSON.stringify(v) ?? '(?)';
+}
+
+/** Resolve a model-supplied unitId to a real unit id, tolerating the common
+ *  slip where the model drops the "unit-" prefix and sends the bare index (as a
+ *  number or a numeric string). Unit ids are generated as `unit-${n}` (see
+ *  sim.ts), so `0`/"0" → "unit-0". Returns the canonical id or null if none
+ *  matches — the caller turns null into a rejection reason. */
+function resolveUnitId(raw: unknown, world: World): string | null {
+  if (typeof raw === 'string' && world.units[raw]) return raw;
+  const n =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && raw.trim() !== ''
+        ? Number(raw)
+        : NaN;
+  if (Number.isInteger(n)) {
+    const id = `unit-${n}`;
+    if (world.units[id]) return id;
+  }
+  return null;
+}
+
+/** Validate one candidate world action. Returns the accepted Action, or a
+ *  `{ reject }` reason string so the caller can surface WHY it was dropped
+ *  (instead of silently swallowing it). setView is handled separately — it is a
+ *  view command, not a world action — so it should never reach here. */
+function validateAction(raw: unknown, world: World): Action | { reject: string } {
+  if (typeof raw !== 'object' || raw === null) return { reject: 'action is not an object' };
   const a = raw as Record<string, unknown>;
-  const unitId = a.unitId;
-  if (typeof unitId !== 'string' || !world.units[unitId]) return null;
+  const type = typeof a.type === 'string' ? a.type : '(missing type)';
+  const unitId = resolveUnitId(a.unitId, world);
+  if (!unitId) return { reject: `${type}: unknown unit ${JSON.stringify(a.unitId)}` };
 
   switch (a.type) {
     case 'move':
-      return isCoord(a.to, world) ? { type: 'move', unitId, to: a.to as Coord } : null;
+      return isCoord(a.to, world)
+        ? { type: 'move', unitId, to: a.to as Coord }
+        : { reject: `move: target ${coordStr(a.to)} out of bounds` };
     case 'harvest':
       return isCoord(a.target, world)
         ? { type: 'harvest', unitId, target: a.target as Coord }
-        : null;
+        : { reject: `harvest: target ${coordStr(a.target)} out of bounds` };
     case 'craft':
       return typeof a.recipe === 'string' && RECIPES[a.recipe]
         ? { type: 'craft', unitId, recipe: a.recipe }
-        : null;
+        : { reject: `craft: unknown recipe ${JSON.stringify(a.recipe)}` };
     case 'build':
-      return typeof a.building === 'string' && BUILDINGS[a.building] && isCoord(a.at, world)
+      if (typeof a.building !== 'string' || !BUILDINGS[a.building]) {
+        return { reject: `build: unknown building ${JSON.stringify(a.building)}` };
+      }
+      return isCoord(a.at, world)
         ? { type: 'build', unitId, building: a.building, at: a.at as Coord }
-        : null;
+        : { reject: `build: location ${coordStr(a.at)} out of bounds` };
     default:
-      return null;
+      return { reject: `unknown action type ${JSON.stringify(a.type)}` };
   }
 }
 
-/** Validate an arbitrary list of candidate actions against the world. */
-function validateList(arr: unknown, world: World): Action[] {
-  if (!Array.isArray(arr)) return [];
-  const actions: Action[] = [];
-  for (const item of arr) {
-    const a = validate(item, world);
-    if (a) actions.push(a);
+/** Validate a setView view command: `center` must be in-bounds, `tilesAcross` a
+ *  positive finite number; at least one must be present. */
+function validateView(raw: Record<string, unknown>, world: World): ViewCommand | { reject: string } {
+  const cmd: ViewCommand = { type: 'setView' };
+  if (raw.center !== undefined) {
+    if (isCoord(raw.center, world)) cmd.center = raw.center as Coord;
+    else return { reject: `setView: center ${coordStr(raw.center)} out of bounds` };
   }
-  return actions;
+  if (raw.tilesAcross !== undefined) {
+    const t = raw.tilesAcross;
+    if (typeof t === 'number' && Number.isFinite(t) && t > 0) cmd.tilesAcross = Math.round(t);
+    else return { reject: `setView: bad tilesAcross ${JSON.stringify(t)}` };
+  }
+  if (cmd.center === undefined && cmd.tilesAcross === undefined) {
+    return { reject: 'setView: neither center nor tilesAcross given' };
+  }
+  return cmd;
+}
+
+/** Cap on how many rejection reasons we keep, so a runaway response can't flood
+ *  the audit log/chat. We keep validating good actions past the cap — only the
+ *  reason list stops growing. */
+const MAX_REJECTED = 10;
+
+/** Split a candidate list into accepted world actions, accepted view commands,
+ *  and human-readable rejection reasons. setView items branch to view-command
+ *  validation; everything else is a world action. */
+function splitAndValidate(
+  arr: unknown,
+  world: World,
+): { actions: Action[]; viewCommands: ViewCommand[]; rejected: string[] } {
+  const actions: Action[] = [];
+  const viewCommands: ViewCommand[] = [];
+  const rejected: string[] = [];
+  const push = (reason: string): void => {
+    if (rejected.length < MAX_REJECTED) rejected.push(reason);
+  };
+  if (!Array.isArray(arr)) return { actions, viewCommands, rejected };
+  for (const item of arr) {
+    if (item && typeof item === 'object' && (item as Record<string, unknown>).type === 'setView') {
+      const r = validateView(item as Record<string, unknown>, world);
+      if ('reject' in r) push(r.reject);
+      else viewCommands.push(r);
+      continue;
+    }
+    const r = validateAction(item, world);
+    if ('reject' in r) push(r.reject);
+    else actions.push(r);
+  }
+  return { actions, viewCommands, rejected };
 }
 
 /** Cap on how many edit ops we accept from a single response, so a runaway
@@ -117,39 +191,46 @@ function parseMemoryOps(raw: unknown): MemoryOp[] | undefined {
   return ops.length ? ops : undefined;
 }
 
-/** The parsed model response: accepted actions, an optional reply, and an
- *  optional list of memory edit ops (present only when the model changed
- *  memory). */
+/** The parsed model response: accepted world actions + view commands, an
+ *  optional reply, optional memory edit ops, and a list of rejection reasons for
+ *  anything we had to drop (so failures are auditable rather than silent). */
 export interface OrchestratorResponse {
   actions: Action[];
+  /** Camera moves requested via setView (applied client-side, not through the
+   *  sim). Empty when the model didn't touch the view. */
+  viewCommands: ViewCommand[];
+  /** Human-readable reasons for dropped items (bad unit, out-of-bounds, unknown
+   *  recipe, un-parseable response). Empty on a clean response. */
+  rejected: string[];
   msg?: string;
   /** Memory edit ops to apply, or undefined to leave memory unchanged. */
   memoryOps?: MemoryOp[];
 }
 
-/** Parse a model response into accepted actions + optional player reply.
- *  Accepts the object form {"actions":[...],"msg":"..."} first, then falls back
- *  to a bare actions array (older/looser outputs). */
+/** Parse a model response into accepted actions/view commands + optional player
+ *  reply, plus reasons for anything rejected. Accepts the object form
+ *  {"actions":[...],"msg":"..."} first, then falls back to a bare actions array
+ *  (older/looser outputs). */
 export function parseResponse(text: string, world: World): OrchestratorResponse {
   const cleaned = text.replace(/```(?:json)?/gi, '').trim();
 
   const obj = sliceJson(cleaned, '{', '}');
   if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
     const o = obj as Record<string, unknown>;
-    const actions = validateList(o.actions, world);
+    const { actions, viewCommands, rejected } = splitAndValidate(o.actions, world);
     const msg = typeof o.msg === 'string' ? o.msg.trim() : '';
     const memoryOps = parseMemoryOps(o.memory);
-    const res: OrchestratorResponse = { actions };
+    const res: OrchestratorResponse = { actions, viewCommands, rejected };
     if (msg) res.msg = msg;
     if (memoryOps !== undefined) res.memoryOps = memoryOps;
     return res;
   }
 
-  // Fallback: a bare array of actions, no message.
-  return { actions: validateList(sliceJson(cleaned, '[', ']'), world) };
-}
-
-/** Parse + validate a model response into accepted Actions (actions only). */
-export function parseActions(text: string, world: World): Action[] {
-  return validateList(extractArray(text), world);
+  // Fallback: a bare array of actions, no message. If nothing parsed at all
+  // (no JSON object AND no JSON array), flag it so the empty result isn't
+  // mistaken for a deliberate no-op plan.
+  const arr = sliceJson(cleaned, '[', ']');
+  const { actions, viewCommands, rejected } = splitAndValidate(arr, world);
+  if (arr === null) rejected.push('response was not valid JSON — no actions parsed');
+  return { actions, viewCommands, rejected };
 }
