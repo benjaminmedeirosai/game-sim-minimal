@@ -9,6 +9,9 @@
 // open window refetches when the host reports a new exchange (aiEvents).
 import { describeAction, describeView } from '@game/shared';
 import type {
+  Action,
+  ActionRecord,
+  ActionStatus,
   AiConfigView,
   AiExchange,
   AiPromptPart,
@@ -18,6 +21,7 @@ import type {
   MemoryRevision,
 } from '@game/shared';
 import {
+  actionLog,
   aiData,
   aiEvents,
   aiStatus,
@@ -27,11 +31,32 @@ import {
   sendAiStatusReq,
   sendAiVoice,
 } from '../net/client';
+import { actionStatusMark } from './attribution';
 import { closeLayer, openLayer } from './escStack';
 import { setActive } from '../state/activeSurface';
 
 function esc(s: string): string {
   return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
+}
+
+/** A stable key for matching an exchange's action to its live ActionRecord: the
+ *  tick it was dispatched plus its type, unit, and target tile. The AI dispatches
+ *  all of an exchange's actions on the exchange's own tick, so (tick, type, unit,
+ *  coord) pins each one down. Used to look up the current execution status for
+ *  the AI-history view (the exchange itself stores only the raw Action). */
+function actionSig(a: Action, tick: number): string {
+  const c = a.type === 'move' ? a.to : a.type === 'harvest' ? a.target : a.type === 'build' ? a.at : undefined;
+  return `${tick}|${a.type}|${a.unitId}|${c ? `${c.x},${c.y}` : ''}`;
+}
+
+/** Index the live action log by signature → status, so AI-history actions can
+ *  show their outcome. Point-in-time: it reflects the log as of this render (the
+ *  Actions panel is the live view); old actions aged out of the ring simply have
+ *  no status and draw no icon. */
+function statusIndex(log: ActionRecord[]): Map<string, ActionStatus> {
+  const idx = new Map<string, ActionStatus>();
+  for (const r of log) if (r.status) idx.set(actionSig(r.action, r.tick), r.status);
+  return idx;
 }
 
 export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
@@ -177,9 +202,11 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     return chips.length ? `<div class="ai-stats">${chips.join('')}</div>` : '';
   }
 
-  function exchangeCard(x: AiExchange, prev: AiExchange | undefined): string {
+  function exchangeCard(x: AiExchange, prev: AiExchange | undefined, status: Map<string, ActionStatus>): string {
     const acts = x.output.actions.length
-      ? `<ul class="ai-acts">${x.output.actions.map((a) => `<li>${esc(describeAction(a))}</li>`).join('')}</ul>`
+      ? `<ul class="ai-acts">${x.output.actions
+          .map((a) => `<li>${actionStatusMark(status.get(actionSig(a, x.tick)))}${esc(describeAction(a))}</li>`)
+          .join('')}</ul>`
       : `<div class="ai-none">no actions</div>`;
     const err = x.output.error ? `<div class="ai-err">${esc(x.output.error)}</div>` : '';
     const who = x.input.onBehalfOf ? esc(x.input.onBehalfOf) : 'auto';
@@ -236,7 +263,8 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       for (let j = i - 1; j >= 0; j--) if (exchanges[j].agent === exchanges[i].agent) return exchanges[j];
       return undefined;
     };
-    const cards = exchanges.map((x, i) => exchangeCard(x, findPrev(i)));
+    const status = statusIndex(actionLog.get());
+    const cards = exchanges.map((x, i) => exchangeCard(x, findPrev(i), status));
     return `<div class="ai-list">${cards.reverse().join('')}</div>`;
   }
 

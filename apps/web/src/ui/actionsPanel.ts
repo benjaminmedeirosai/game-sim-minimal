@@ -5,7 +5,7 @@
 import { describeAction } from '@game/shared';
 import type { ActionRecord } from '@game/shared';
 import { actionLog } from '../net/client';
-import { isAi, sourceColor, sourceLabel } from './attribution';
+import { actionStatusMark, isAi, sourceColor, sourceLabel } from './attribution';
 
 function esc(s: string): string {
   return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
@@ -17,7 +17,7 @@ function row(rec: ActionRecord): string {
   const badge = isAi(rec.source) ? '<span class="act-ai">AI</span>' : '';
   return (
     `<li class="act-row" style="border-left-color:${color}">` +
-    `<div class="act-main">${badge}<span class="act-desc">${esc(describeAction(rec.action))}</span></div>` +
+    `<div class="act-main">${badge}${actionStatusMark(rec.status)}<span class="act-desc">${esc(describeAction(rec.action))}</span></div>` +
     `<div class="act-meta"><span class="act-who" style="color:${color}">${label}</span>` +
     `<span class="act-tick">t${rec.tick}</span></div>` +
     `</li>`

@@ -311,6 +311,17 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: #a78bfa; border-radius: 4px; padding: 1px 4px;
 }
 .act-desc { font-size: 12px; }
+/* Per-action outcome glyph, shared by the Actions panel and AI History: amber
+   spinner while running, green ✓ done, muted ⊘ interrupted, red ✕ failed. */
+.act-status { flex: 0 0 auto; font-size: 11px; line-height: 1; }
+.act-status.st-ongoing { color: var(--warn); display: inline-block; animation: act-spin 1.4s linear infinite; }
+.act-status.st-done { color: #4ade80; }
+.act-status.st-interrupted { color: var(--muted); }
+.act-status.st-error { color: #f87171; }
+@keyframes act-spin { to { transform: rotate(360deg); } }
+/* In the AI-history action list the glyph is inline text, so give it a little
+   room before the label. */
+.ai-acts .act-status { margin-right: 4px; }
 .act-meta { display: flex; justify-content: space-between; font-size: 10px; }
 .act-who { font-weight: 600; }
 .act-tick { color: var(--muted); font-variant-numeric: tabular-nums; }
