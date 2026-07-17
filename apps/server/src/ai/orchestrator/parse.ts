@@ -96,6 +96,8 @@ function validateAction(raw: unknown, world: World): Action | { reject: string }
       return isCoord(a.at, world)
         ? { type: 'build', unitId, building: a.building, at: a.at as Coord }
         : { reject: `build: location ${coordStr(a.at)} out of bounds` };
+    case 'cancel':
+      return { type: 'cancel', unitId };
     default:
       return { reject: `unknown action type ${JSON.stringify(a.type)}` };
   }

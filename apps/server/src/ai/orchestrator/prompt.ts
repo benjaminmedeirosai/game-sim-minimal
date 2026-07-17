@@ -6,12 +6,17 @@ import {
   BASE_TPS,
   BUILDINGS,
   DEFAULT_VISION_RADIUS,
-  HARVEST_POWER,
   HARVEST_RULES,
+  OBJECT_DEFENSE,
   OBJECT_HP,
   RECIPES,
   TERRAIN_COLORS,
   describeAction,
+  effectiveSpeed,
+  encumbrance,
+  harvestDamage,
+  unitCapacity,
+  unitLoad,
   visibleTiles,
 } from '@game/shared';
 import type {
@@ -48,28 +53,34 @@ function buildingLines(): string {
     .join('\n');
 }
 
-// How much the matching tool speeds a harvest up (boosted vs. bare-handed
-// chip rate) — 3× today. Derived so it tracks HARVEST_POWER automatically.
-const TOOL_SPEEDUP = HARVEST_POWER.boosted / HARVEST_POWER.base;
-
-/** Ticks to deplete `hp` at a given per-tick chip `power`, plus the wall-clock
- *  that is at normal (1×) game speed. Speeds > 1× shorten it proportionally. */
-function workTime(hp: number, power: number): string {
-  const ticks = Math.ceil(hp / power);
+/** Ticks to deplete `hp` at a given per-tick hp-loss `rate`, plus the wall-clock
+ *  at normal (1×) game speed. Speeds > 1× shorten it proportionally. */
+function workTime(hp: number, rate: number): string {
+  const ticks = Math.ceil(hp / rate);
   const secs = Math.round((ticks / BASE_TPS) * 10) / 10;
   return `~${secs}s (${ticks} ticks)`;
+}
+
+// hp removed per tick = damage / defense (see the harvest damage model). The
+// verb maps to which tool matters: chop→axe, mine→pickaxe.
+function chipRate(verb: 'chop' | 'mine', kind: string, tools: string[]): number {
+  return harvestDamage(verb, tools) / (OBJECT_DEFENSE[kind] ?? 1);
 }
 
 function harvestLines(): string {
   return Object.entries(HARVEST_RULES)
     .map(([kind, rule]) => {
+      const verb: 'chop' | 'mine' = kind === 'tree' ? 'chop' : 'mine';
       const bits: string[] = [];
       const article = (w: string): string => (/^[aeiou]/i.test(w) ? 'an' : 'a');
       if (rule.require) bits.push(`REQUIRES ${article(rule.require)} ${rule.require} (impossible without one)`);
       if (rule.boost && rule.boost !== rule.require) {
-        bits.push(`${TOOL_SPEEDUP}× faster with ${article(rule.boost)} ${rule.boost}`);
+        const speedup = Math.round((chipRate(verb, kind, [rule.boost]) / chipRate(verb, kind, [])) * 10) / 10;
+        bits.push(`${speedup}× faster with ${article(rule.boost)} ${rule.boost}`);
       }
-      return `  - ${kind}: ${bits.length ? bits.join('; ') : 'bare hands OK'}`;
+      const def = OBJECT_DEFENSE[kind] ?? 1;
+      bits.push(`defense ${def}`);
+      return `  - ${kind}: ${bits.join('; ')}`;
     })
     .join('\n');
 }
@@ -97,13 +108,16 @@ function terrainLines(): string {
  *  carrying fruit) but is listed so the model connects the label to a behavior.
  *  Work times exclude travel and are at normal (1×) game speed. */
 function objectLines(): string {
-  const base = HARVEST_POWER.base;
-  const boosted = HARVEST_POWER.boosted;
+  const treeHand = chipRate('chop', 'tree', []);
+  const treeAxe = chipRate('chop', 'tree', ['axe']);
+  const rockHand = chipRate('mine', 'rock', []);
+  const rockPick = chipRate('mine', 'rock', ['pickaxe']);
+  const orePick = chipRate('mine', 'ore', ['pickaxe']);
   return [
-    `  - tree: chop for wood (tree removed) — ${OBJECT_HP.tree} HP; ${workTime(OBJECT_HP.tree, base)} by hand, ${workTime(OBJECT_HP.tree, boosted)} with an axe`,
+    `  - tree: chop for wood (tree removed) — ${OBJECT_HP.tree} HP, defense ${OBJECT_DEFENSE.tree}; ${workTime(OBJECT_HP.tree, treeHand)} by hand, ${workTime(OBJECT_HP.tree, treeAxe)} with an axe`,
     '  - fruit tree: a tree bearing fruit — gather for fruit/food, instant (1 tick); tree stays standing',
-    `  - rock: mine for stone — ${OBJECT_HP.rock} HP; ${workTime(OBJECT_HP.rock, base)} by hand, ${workTime(OBJECT_HP.rock, boosted)} with a pickaxe`,
-    `  - ore: mine for metal ore (iron/copper/gold) — ${OBJECT_HP.ore} HP; REQUIRES a pickaxe, ${workTime(OBJECT_HP.ore, boosted)}`,
+    `  - rock: mine for stone — ${OBJECT_HP.rock} HP, defense ${OBJECT_DEFENSE.rock}; ${workTime(OBJECT_HP.rock, rockHand)} by hand, ${workTime(OBJECT_HP.rock, rockPick)} with a pickaxe`,
+    `  - ore: mine for metal ore (iron/copper/gold) — ${OBJECT_HP.ore} HP, high defense ${OBJECT_DEFENSE.ore}; REQUIRES a pickaxe, ${workTime(OBJECT_HP.ore, orePick)}`,
   ].join('\n');
 }
 
@@ -140,7 +154,14 @@ export function systemPrompt(): string {
     '  {"type":"harvest","unitId":"<id>","target":{"x":<int>,"y":<int>}}',
     '  {"type":"craft","unitId":"<id>","recipe":"<id>"}',
     '  {"type":"build","unitId":"<id>","building":"<id>","at":{"x":<int>,"y":<int>}}',
+    '  {"type":"cancel","unitId":"<id>"}',
     '  {"type":"setView","center":{"x":<int>,"y":<int>},"tilesAcross":<int>}',
+    '',
+    'A unit that is chopping, mining, crafting, or building is BUSY: it ignores',
+    'every command except cancel until the job finishes. Only idle or plain-moving',
+    'units accept a new task. Use cancel to stop a busy unit\'s current job (e.g. a',
+    'player says "stop unit-2" or you need to redirect it); crafting inputs are',
+    'refunded. cancel on an idle unit does nothing.',
     '',
     'Use the EXACT unitId from the world snapshot below (e.g. "unit-0"), quoted as',
     'a string — never a bare number like 0.',
@@ -233,6 +254,14 @@ function nearestCell(from: Coord, cells: Coord[]): { cell: Coord; dist: number }
   return best;
 }
 
+/** A job's completion as a percentage, from ticks remaining vs. the starting
+ *  total (falls back to 0% if an older save's job lacks a total). */
+function jobProgress(remaining: number, total?: number): string {
+  if (!total || total <= 0) return '0%';
+  const done = Math.max(0, Math.min(1, 1 - remaining / total));
+  return `${Math.round(done * 100)}%`;
+}
+
 /** A compact, model-friendly snapshot of the world: every unit in full (idle
  *  ones annotated with their nearest target of each kind), plus EVERY
  *  harvestable target currently in vision, listed by coordinate. The fog already
@@ -265,19 +294,31 @@ export function worldContext(world: World): string {
   // than in prose) removes the ambiguity that had the model emitting a bare "0";
   // the {x,y} coord shape here also mirrors exactly what actions must send back.
   const units = Object.values(world.units).map((u) => {
+    // Compact stats: hp/maxHp, armor, bag load/capacity, encumbrance %, and the
+    // current effective speed (tiles/s) after that encumbrance. A heavy bag both
+    // slows the unit and (at 100%) stops it picking up more — the model should
+    // weigh that when routing harvesters.
+    const load = Math.round(unitLoad(u) * 10) / 10;
     const obj: Record<string, unknown> = {
       id: u.id,
       pos: { x: u.pos.x, y: u.pos.y },
       inv: u.inventory,
       tools: u.tools,
+      hp: `${Math.round(u.hp ?? 100)}/${Math.round(u.maxHp ?? 100)}`,
+      armor: u.armor ?? 0,
+      bag: `${load}/${unitCapacity(u)}`,
+      enc: `${Math.round(encumbrance(u) * 100)}%`,
+      spd: Math.round(effectiveSpeed(u) * 100) / 100,
     };
     if (u.job) {
       obj.status = u.job.verb;
       obj.at = { x: u.job.target.x, y: u.job.target.y };
     } else if (u.craftJob) {
       obj.status = `craft ${u.craftJob.recipe}`;
+      obj.progress = jobProgress(u.craftJob.remaining, u.craftJob.total);
     } else if (u.buildJob) {
       obj.status = `build ${u.buildJob.building}`;
+      obj.progress = jobProgress(u.buildJob.remaining, u.buildJob.total);
     } else {
       obj.status = 'idle';
       // Hand each idle unit its nearest target of each kind (Manhattan distance —
