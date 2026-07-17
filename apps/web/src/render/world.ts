@@ -22,6 +22,7 @@ import {
   toCell,
   unitCapacity,
   unitLoad,
+  unitShort,
 } from '@game/shared';
 import type { Unit, World } from '@game/shared';
 import { sendAction } from '../net/client';
@@ -32,7 +33,16 @@ import { recordDraw } from '../state/clientPerf';
 import { isExplored, isVisible, rememberedObject, resetFog, updateFog } from '../state/fog';
 import { pointerTile } from '../state/pointer';
 import { closeLayer, openLayer } from '../ui/escStack';
-import { buildingSvg, constructionSvg, itemsSvg, objectSvg, unitSvg } from './sprites';
+import {
+  buildingSvg,
+  constructionSvg,
+  itemIconSvg,
+  itemsSvg,
+  objectSvg,
+  storageIconSvg,
+  toolIconSvg,
+  unitSvg,
+} from './sprites';
 import { clampTilesAcross, refreshViewportInfo, setViewportContainer, wheelZoom } from './viewport';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -159,7 +169,100 @@ export function mountWorld(container: HTMLElement): void {
 
   setViewportContainer(container);
   attachControls(svg, container, view);
+
+  // Action-hint chip: with a unit selected, the map is in "targeting" mode, so a
+  // single click DOES something (chop/mine/gather/pickup/deposit/move). A little
+  // chip follows the cursor naming that action (and showing its icon) so the
+  // player knows what a click will do before committing — we're a one-click game.
+  const hint = document.createElement('div');
+  hint.className = 'cursor-hint';
+  hint.hidden = true;
+  container.appendChild(hint);
+
+  let lastClient: { x: number; y: number } | null = null;
+  const updateHint = (clientX?: number, clientY?: number): void => {
+    if (clientX != null && clientY != null) lastClient = { x: clientX, y: clientY };
+    const world = game.get().world;
+    const sel = selection.get();
+    const u = sel.unitId && world ? world.units[sel.unitId] : undefined;
+    // Only in targeting mode: a unit selected, not placing a building, cursor on map.
+    if (!world || !u || sel.pendingBuild || !lastClient) {
+      hint.hidden = true;
+      container.classList.remove('targeting');
+      return;
+    }
+    const rect = container.getBoundingClientRect();
+    const x = Math.floor(view.left + ((lastClient.x - rect.left) / rect.width) * view.viewW);
+    const y = Math.floor(view.top + ((lastClient.y - rect.top) / rect.height) * view.viewH);
+    if (x < 0 || y < 0 || x >= world.width || y >= world.height) {
+      hint.hidden = true;
+      container.classList.remove('targeting');
+      return;
+    }
+    const h = actionHint(world, u, x, y);
+    hint.innerHTML = `<span class="ch-icon">${h.icon}</span><span class="ch-label">${h.label}</span>`;
+    hint.classList.toggle('warn', !!h.warn);
+    hint.style.left = `${lastClient.x - rect.left + 16}px`;
+    hint.style.top = `${lastClient.y - rect.top + 18}px`;
+    hint.hidden = false;
+    container.classList.add('targeting');
+  };
+  container.addEventListener('pointermove', (e) => updateHint(e.clientX, e.clientY));
+  container.addEventListener('pointerleave', () => {
+    hint.hidden = true;
+    container.classList.remove('targeting');
+  });
+  // Recompute when the selection changes (enter/leave targeting) or a snapshot
+  // changes what's under the cursor (e.g. a tree the pointer is over gets chopped).
+  selection.subscribe(() => updateHint());
+  game.subscribe(() => updateHint());
 }
+
+/** What a single click at (x,y) would do for the selected unit — the label + icon
+ *  the cursor hint shows. Mirrors handleClick's dispatch so the preview never
+ *  lies. `warn` flags an action the sim will reject (e.g. ore without a pickaxe). */
+function actionHint(
+  world: World,
+  u: Unit,
+  x: number,
+  y: number,
+): { label: string; icon: string; warn?: boolean } {
+  const other = Object.values(world.units).find((v) => v.pos.x === x && v.pos.y === y);
+  if (other && other.id !== u.id) return { label: `Select ${unitShort(other.id)}`, icon: SELECT_ICON };
+
+  const tile = tileAt(world, x, y);
+  const bld = tile?.building ? world.buildings[tile.building] : undefined;
+  if (bld?.type === 'storage') {
+    const carrying = Object.values(u.inventory).some((n) => n > 0);
+    return carrying
+      ? { label: 'Deposit', icon: storageIconSvg() }
+      : { label: 'Withdraw', icon: storageIconSvg() };
+  }
+  if (tile?.object) {
+    const o = tile.object;
+    if (o.kind === 'tree' && o.hasFruit) return { label: 'Gather fruit', icon: itemIconSvg('fruit') };
+    if (o.kind === 'tree') return { label: 'Chop', icon: toolIconSvg('axe') };
+    if (o.kind === 'ore' && !u.tools.includes('pickaxe'))
+      return { label: 'Mine — needs pickaxe', icon: toolIconSvg('pickaxe'), warn: true };
+    return { label: 'Mine', icon: toolIconSvg('pickaxe') }; // rock / ore
+  }
+  if (tile?.items) {
+    const key = Object.keys(tile.items)[0];
+    return key
+      ? { label: `Pick up ${key}`, icon: itemIconSvg(key) }
+      : { label: 'Pick up', icon: MOVE_ICON };
+  }
+  return { label: 'Move', icon: MOVE_ICON };
+}
+
+// Inline cursor-hint icons that aren't resource/tool glyphs.
+const MOVE_ICON =
+  `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#e8eaed" stroke-width="2" ` +
+  `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+  `<path d="M12 2v20M2 12h20"/><path d="M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></svg>`;
+const SELECT_ICON =
+  `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#ffd54a" stroke-width="2" aria-hidden="true">` +
+  `<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.6" fill="#ffd54a"/></svg>`;
 
 interface CullRange {
   x0: number;

@@ -153,6 +153,23 @@ export function itemsSvg(items: Record<string, number>): string {
     .join('');
 }
 
+/** A small standalone SVG icon (20px) for a resource glyph — used by the cursor
+ *  action-hint chip so "Pick up wood" shows an actual log. */
+export function itemIconSvg(id: string): string {
+  return `<svg viewBox="0 0 1 1" width="20" height="20" aria-hidden="true">${itemGlyph(id)}</svg>`;
+}
+
+/** A small standalone SVG for a tool (axe/pickaxe) — the chop/mine cursor icons. */
+export function toolIconSvg(id: 'axe' | 'pickaxe'): string {
+  const g = id === 'pickaxe' ? pickaxeGlyph() : axeGlyph();
+  return `<svg viewBox="0 0 1 1" width="20" height="20" aria-hidden="true">${g}</svg>`;
+}
+
+/** A small standalone SVG for the storage glyph — the deposit/withdraw cursor. */
+export function storageIconSvg(): string {
+  return `<svg viewBox="0 0 1 1" width="20" height="20" aria-hidden="true">${storage('#5a6068', '#8a5a34')}</svg>`;
+}
+
 /** One loose resource, drawn bold in tile-space (0..1) sitting low like it's on
  *  the ground, with a ground shadow and (for a stack) a small count badge. */
 export function itemSvg(id: string, qty?: number): string {
