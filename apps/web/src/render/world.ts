@@ -261,13 +261,30 @@ function destOf(u: Unit): { x: number; y: number } | undefined {
   return undefined;
 }
 
+// The selection panel rebuilds by swapping innerHTML. Snapshots arrive ~10×/s,
+// so without these guards a rebuild lands between a button's pointerdown and
+// pointerup — the element is replaced and the browser never fires `click`
+// (down/up on different nodes). `infoSig` skips rebuilds when nothing the panel
+// shows has changed (an idle unit never churns); `infoPointerDown` defers any
+// rebuild until the user releases, so a live click is never yanked out.
+let infoSig: string | undefined;
+let infoPointerDown = false;
+let infoRebuildPending = false;
+
 function updateInfo(info: HTMLElement): void {
+  // Mid-press: don't touch the DOM; rebuild once the pointer is released.
+  if (infoPointerDown) {
+    infoRebuildPending = true;
+    return;
+  }
+
   const id = selection.get().unitId;
   const pendingBuild = selection.get().pendingBuild;
   const world = game.get().world;
   const u = id && world ? world.units[id] : undefined;
   if (!u) {
     info.hidden = true;
+    infoSig = undefined;
     return;
   }
   info.hidden = false;
@@ -313,6 +330,12 @@ function updateInfo(info: HTMLElement): void {
   const hint = pendingBuild
     ? `<div class="sel-hint">Click a tile to place <b>${BUILDINGS[pendingBuild]?.label ?? pendingBuild}</b> · Esc to cancel</div>`
     : '';
+
+  // Everything the panel renders is derived from these; if none changed, the
+  // existing DOM is already correct — leaving it untouched keeps clicks clean.
+  const sig = JSON.stringify([u.id, u.pos, doing, u.inventory, u.tools, pendingBuild ?? '']);
+  if (sig === infoSig) return;
+  infoSig = sig;
 
   info.innerHTML =
     `<div class="sel-head"><b>${u.id}</b> <span class="muted">(${u.pos.x}, ${u.pos.y})</span>` +
@@ -424,6 +447,28 @@ function attachMenu(info: HTMLElement): void {
   for (const ev of ['pointerdown', 'pointerup', 'click'] as const) {
     info.addEventListener(ev, (e) => e.stopPropagation());
   }
+
+  // Freeze rebuilds while a button is pressed (see updateInfo). pointerup is on
+  // window+capture so a release still lands even if it happens off the panel —
+  // and capture dodges the stopPropagation above, which kills the bubble phase.
+  // The deferred rebuild waits a frame so the `click` this pointerup generates
+  // fires against the still-intact button before we swap the DOM.
+  info.addEventListener('pointerdown', () => {
+    infoPointerDown = true;
+  });
+  window.addEventListener(
+    'pointerup',
+    () => {
+      if (!infoPointerDown) return;
+      infoPointerDown = false;
+      if (infoRebuildPending) {
+        infoRebuildPending = false;
+        requestAnimationFrame(() => updateInfo(info));
+      }
+    },
+    true,
+  );
+
   info.addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-craft],[data-build]');
     if (!btn) return;
