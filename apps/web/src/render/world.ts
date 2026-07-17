@@ -32,7 +32,7 @@ import { recordDraw } from '../state/clientPerf';
 import { isExplored, isVisible, rememberedObject, resetFog, updateFog } from '../state/fog';
 import { pointerTile } from '../state/pointer';
 import { closeLayer, openLayer } from '../ui/escStack';
-import { buildingSvg, constructionSvg, objectSvg, unitSvg } from './sprites';
+import { buildingSvg, constructionSvg, itemsSvg, objectSvg, unitSvg } from './sprites';
 import { clampTilesAcross, refreshViewportInfo, setViewportContainer, wheelZoom } from './viewport';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -227,11 +227,13 @@ function buildFog(r: CullRange): string {
 function buildDyn(world: World, r: CullRange, selId: string | undefined): string {
   const parts: string[] = [];
 
-  // Objects (mutable: they deplete as units work them).
+  // Objects (mutable: they deplete as units work them) and loose ground items
+  // (dropped resources awaiting pickup — never share a tile with an object).
   for (let y = r.y0; y <= r.y1; y++) {
     for (let x = r.x0; x <= r.x1; x++) {
       const tile = tileAt(world, x, y);
       if (tile?.object) parts.push(`<g transform="translate(${x} ${y})">${objectSvg(tile.object)}</g>`);
+      else if (tile?.items) parts.push(`<g transform="translate(${x} ${y})">${itemsSvg(tile.items)}</g>`);
     }
   }
 

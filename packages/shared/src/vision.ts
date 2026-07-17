@@ -35,21 +35,21 @@ export function visibleTiles(world: World): Set<string> {
   return seen;
 }
 
-/** A view of the world with tile objects removed everywhere the colony can't
- *  currently see — the fog applied at the source. Units and buildings are the
- *  colony's own, so they're left intact. Tiles that are unchanged keep their
- *  original reference (and the whole world is returned as-is when nothing is
- *  hidden), so this is cheap to call every tick. */
+/** A view of the world with tile objects AND loose ground items removed
+ *  everywhere the colony can't currently see — the fog applied at the source.
+ *  Units and buildings are the colony's own, so they're left intact. Tiles that
+ *  are unchanged keep their original reference (and the whole world is returned
+ *  as-is when nothing is hidden), so this is cheap to call every tick. */
 export function fogWorld(world: World): World {
   const visible = visibleTiles(world);
   let hidAny = false;
   const tiles = world.tiles.map((tile, i) => {
-    if (!tile.object) return tile;
+    if (!tile.object && !tile.items) return tile;
     const x = i % world.width;
     const y = (i / world.width) | 0;
     if (visible.has(tileKey(x, y))) return tile;
     hidAny = true;
-    return { ...tile, object: undefined };
+    return { ...tile, object: undefined, items: undefined };
   });
   return hidAny ? { ...world, tiles } : world;
 }

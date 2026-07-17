@@ -1,7 +1,7 @@
 // Flat-SVG glyph for each world object, drawn in unit tile-space (0..1). Later
 // milestones swap these string builders for <image> sprites keyed by the same
 // type ids — nothing else needs to change.
-import { BUILDINGS, ORES, ROCKS, TREES } from '@game/shared';
+import { BUILDINGS, ORES, ROCKS, TREES, itemColor } from '@game/shared';
 import type { WorldObject } from '@game/shared';
 
 export function objectSvg(obj: WorldObject): string {
@@ -78,6 +78,29 @@ export function constructionSvg(type: string): string {
     `<path d="M0.44 0.13 h0.12 M0.5 0.08 v0.1" stroke="#3a2c0a" stroke-width="0.02"/>` +
     `</g>`
   );
+}
+
+/** Loose resources lying on a tile: a little cluster of mounds along the ground,
+ *  one per item type (max 3), tinted by each item's registry colour. Drawn small
+ *  and low so it reads as "stuff on the floor" distinct from standing objects. */
+export function itemsSvg(items: Record<string, number>): string {
+  const keys = Object.keys(items).filter((k) => (items[k] ?? 0) > 0);
+  if (!keys.length) return '';
+  const spots: Array<[number, number]> = [
+    [0.5, 0.74],
+    [0.34, 0.8],
+    [0.66, 0.8],
+  ];
+  let out = '';
+  keys.slice(0, 3).forEach((k, i) => {
+    const [cx, cy] = spots[i] ?? spots[0]!;
+    const c = itemColor(k);
+    out +=
+      `<ellipse cx="${cx}" cy="${cy + 0.05}" rx="0.13" ry="0.045" fill="#00000033"/>` +
+      `<path d="M${cx - 0.12} ${cy + 0.05} Q${cx} ${cy - 0.11} ${cx + 0.12} ${cy + 0.05} Z" ` +
+      `fill="${c}" stroke="#00000040" stroke-width="0.015"/>`;
+  });
+  return out;
 }
 
 function ore(type: string): string {

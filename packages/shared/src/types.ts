@@ -23,6 +23,12 @@ export interface Tile {
   /** Id of a building occupying this tile (blocks movement). Details live in
    *  world.buildings; this is the O(1) occupancy flag for pathfinding. */
   building?: string;
+  /** Loose resources lying on the ground here (item id → quantity), dropped when
+   *  a full unit keeps harvesting or via a drop command. Each item is capped at
+   *  its stack max (see itemStack); a bigger pile spills to neighbouring tiles.
+   *  Absent when the tile is bare. Doesn't block movement — units walk over and
+   *  pick up. */
+  items?: Record<string, number>;
 }
 
 export interface WorldSettings {

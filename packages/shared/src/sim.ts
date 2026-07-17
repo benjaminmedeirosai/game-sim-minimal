@@ -18,8 +18,15 @@ import {
   HARVEST_RULES,
   OBJECT_DEFENSE,
 } from './registry/recipes.js';
-import { DEFAULT_BAG_CAPACITY } from './registry/items.js';
-import { encumbrance, harvestDamage, isEncumbered, objectDefense, speedMult } from './stats.js';
+import { DEFAULT_BAG_CAPACITY, itemStack, itemWeight } from './registry/items.js';
+import {
+  encumbrance,
+  harvestDamage,
+  objectDefense,
+  speedMult,
+  unitCapacity,
+  unitLoad,
+} from './stats.js';
 import { tileAt } from './types.js';
 import type { Coord, Tile, TerrainType, Unit, World, WorldObject, WorldSettings } from './types.js';
 import { visibleTiles } from './vision.js';
@@ -429,7 +436,7 @@ function stepUnit(world: World, unit: Unit): void {
     unit.job = undefined; // someone else finished it
     return;
   }
-  workObject(unit, tile, verb);
+  workObject(world, unit, tile, verb);
 }
 
 /** One tick of crafting; on completion the tool lands in the unit's kit. Inputs
@@ -481,17 +488,14 @@ function stepBuild(world: World, unit: Unit): void {
 
 /** Do one tick of work on the target object. Gather is instantaneous and leaves
  *  the tree; chop/mine chip 1 hp/tick and harvest the registry yields when the
- *  object is depleted. */
-function workObject(unit: Unit, tile: Tile, verb: 'chop' | 'mine' | 'gather'): void {
+ *  object is depleted. Yields the bag can't hold spill onto the ground (a full
+ *  unit keeps working — the overflow is dropped for later hauling), so a harvest
+ *  is never blocked by encumbrance. */
+function workObject(world: World, unit: Unit, tile: Tile, verb: 'chop' | 'mine' | 'gather'): void {
   const obj = tile.object!;
-  // A full bag can't take any more — stop rather than harvesting into the void.
-  if (isEncumbered(unit)) {
-    unit.job = undefined;
-    return;
-  }
   if (verb === 'gather') {
     if (obj.kind === 'tree' && obj.hasFruit) {
-      addYield(unit, FRUIT_YIELD);
+      collectOrDrop(world, unit, unit.pos, FRUIT_YIELD);
       obj.hasFruit = false;
     }
     unit.job = undefined;
@@ -508,9 +512,73 @@ function workObject(unit: Unit, tile: Tile, verb: 'chop' | 'mine' | 'gather'): v
   // is where a pickaxe pays off; bare hands still work on ungated objects.
   obj.hp -= harvestDamage(verb, unit.tools) / objectDefense(obj);
   if (obj.hp <= 0) {
-    addYield(unit, yieldsFor(obj));
+    collectOrDrop(world, unit, unit.pos, yieldsFor(obj));
     tile.object = undefined;
     unit.job = undefined;
+  }
+}
+
+/** Route yields into the unit's bag up to its weight capacity, dropping whatever
+ *  doesn't fit onto the ground at `at`. This is what lets a full unit keep
+ *  working: the excess spills to the floor rather than stalling the job. */
+function collectOrDrop(
+  world: World,
+  unit: Unit,
+  at: Coord,
+  yields: Record<string, number>,
+): void {
+  for (const key in yields) {
+    let qty = yields[key]!;
+    if (qty <= 0) continue;
+    const w = itemWeight(key);
+    const room = unitCapacity(unit) - unitLoad(unit); // remaining weight
+    const fits = w > 0 ? Math.floor(room / w) : qty;
+    const take = Math.max(0, Math.min(qty, fits));
+    if (take > 0) {
+      unit.inventory[key] = (unit.inventory[key] ?? 0) + take;
+      qty -= take;
+    }
+    if (qty > 0) dropOnGround(world, at, key, qty);
+  }
+}
+
+/** Pile `qty` of `item` onto the ground at `at`, capping each tile's stack at the
+ *  item's stack max and spilling the remainder outward (Chebyshev rings) to the
+ *  nearest bare-ground tiles with room. Items lie on walkable ground only (never
+ *  under an object/building or on water). Any residue with nowhere to go
+ *  overfills the origin rather than vanishing. */
+function dropOnGround(world: World, at: Coord, item: string, qty: number): void {
+  const max = itemStack(item);
+  let remaining = qty;
+  const tryTile = (x: number, y: number): void => {
+    if (remaining <= 0) return;
+    const t = tileAt(world, x, y);
+    if (!t || t.object || t.building || t.terrain === 'water') return;
+    const items = (t.items ??= {});
+    const room = max - (items[item] ?? 0);
+    if (room <= 0) return;
+    const put = Math.min(room, remaining);
+    items[item] = (items[item] ?? 0) + put;
+    remaining -= put;
+  };
+  for (let radius = 0; radius <= 6 && remaining > 0; radius++) {
+    if (radius === 0) {
+      tryTile(at.x, at.y);
+      continue;
+    }
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+        tryTile(at.x + dx, at.y + dy);
+      }
+    }
+  }
+  if (remaining > 0) {
+    const t = tileAt(world, at.x, at.y);
+    if (t) {
+      const items = (t.items ??= {});
+      items[item] = (items[item] ?? 0) + remaining;
+    }
   }
 }
 
@@ -523,12 +591,6 @@ function yieldsFor(obj: WorldObject): Record<string, number> {
   if (obj.kind === 'tree') return TREES[obj.type]?.yields ?? {};
   if (obj.kind === 'rock') return ROCKS[obj.type]?.yields ?? {};
   return ORES[obj.type]?.yields ?? {};
-}
-
-function addYield(unit: Unit, yields: Record<string, number>): void {
-  for (const key in yields) {
-    unit.inventory[key] = (unit.inventory[key] ?? 0) + yields[key]!;
-  }
 }
 
 function isAdjacent(ax: number, ay: number, bx: number, by: number): boolean {
