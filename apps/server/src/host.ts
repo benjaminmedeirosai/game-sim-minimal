@@ -266,6 +266,18 @@ export class Host {
       rec.status = 'done';
       return;
     }
+    // Instant transfers with no walk resolve immediately: dropNearby always,
+    // and a drop/pickup that had no tile to walk to (done on the spot, or a
+    // harmless no-op). A drop/pickup that DID start a walk falls through to the
+    // ongoing path below.
+    if (a.type === 'dropNearby') {
+      rec.status = 'done';
+      return;
+    }
+    if ((a.type === 'drop' || a.type === 'pickup') && !unit.haulJob) {
+      rec.status = 'done';
+      return;
+    }
     const started =
       a.type === 'move'
         ? !!unit.moveGoal
@@ -275,7 +287,9 @@ export class Host {
             ? !!unit.craftJob
             : a.type === 'build'
               ? !!unit.buildJob
-              : false;
+              : a.type === 'drop' || a.type === 'pickup'
+                ? !!unit.haulJob
+                : false;
     if (!started) {
       // The busy-guard rejected it, or there was nothing to do (empty target,
       // unreachable). Nothing will run, so it's a no-op failure.
@@ -335,6 +349,12 @@ export class Host {
       } else if (a.type === 'build') {
         if (unit.buildJob) outcome = null;
         else outcome = tileAt(this.world, a.at.x, a.at.y)?.building ? 'done' : 'error';
+      } else if (a.type === 'drop' || a.type === 'pickup') {
+        // Still walking to the tile? ongoing. Otherwise the transfer ran when it
+        // reached the tile (done); if the job was dropped mid-walk (unreachable)
+        // the unit never got there → error.
+        if (unit.haulJob) outcome = null;
+        else outcome = Host.coordEq(unit.pos, a.at) ? 'done' : 'error';
       }
       if (outcome) {
         rec.status = outcome;

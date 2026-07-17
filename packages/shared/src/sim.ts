@@ -334,7 +334,85 @@ export function applyAction(world: World, action: Action): void {
       unit.buildJob = { building: action.building, at: { ...action.at }, remaining: buildTicks, total: buildTicks };
       return;
     }
+    case 'dropNearby': {
+      const have = unit.inventory[action.item] ?? 0;
+      const qty = Math.min(action.qty, have);
+      if (qty <= 0) return;
+      clearJobs(unit);
+      performDrop(world, unit, action.item, qty, unit.pos);
+      return;
+    }
+    case 'drop': {
+      const have = unit.inventory[action.item] ?? 0;
+      const qty = Math.min(action.qty, have);
+      if (qty <= 0) return;
+      const { x, y } = action.at;
+      if (!isWalkable(world, x, y)) return; // can only drop on standable ground
+      clearJobs(unit);
+      if (unit.pos.x === x && unit.pos.y === y) {
+        performDrop(world, unit, action.item, qty, unit.pos);
+        return;
+      }
+      const path = bfsPath(world, unit.pos, (cx, cy) => cx === x && cy === y, unit.id);
+      if (!path) return;
+      unit.path = path;
+      unit.moveCooldown = 0;
+      unit.haulJob = { op: 'drop', at: { x, y }, item: action.item, qty };
+      return;
+    }
+    case 'pickup': {
+      const { x, y } = action.at;
+      if (!isWalkable(world, x, y)) return;
+      const tile = tileAt(world, x, y);
+      if (!tile?.items) return; // nothing loose here
+      clearJobs(unit);
+      if (unit.pos.x === x && unit.pos.y === y) {
+        performPickup(unit, tile, action.item, action.qty);
+        return;
+      }
+      const path = bfsPath(world, unit.pos, (cx, cy) => cx === x && cy === y, unit.id);
+      if (!path) return;
+      unit.path = path;
+      unit.moveCooldown = 0;
+      unit.haulJob = { op: 'pickup', at: { x, y }, item: action.item, qty: action.qty };
+      return;
+    }
   }
+}
+
+/** Move up to `qty` of `item` from the bag onto the ground at `at` (with spill).
+ *  A no-op when the unit isn't carrying any. */
+function performDrop(world: World, unit: Unit, item: string, qty: number, at: Coord): void {
+  const have = unit.inventory[item] ?? 0;
+  const move = Math.min(qty, have);
+  if (move <= 0) return;
+  unit.inventory[item] = have - move;
+  if (unit.inventory[item]! <= 0) delete unit.inventory[item];
+  dropOnGround(world, at, item, move);
+}
+
+/** Load loose ground items at `tile` into the bag, up to its weight capacity.
+ *  With `item` set, only that resource (at most `qty`); otherwise every item on
+ *  the tile. Leaves behind whatever the bag can't carry; clears the tile's pile
+ *  when it's emptied. */
+function performPickup(unit: Unit, tile: Tile, item?: string, qty?: number): void {
+  const items = tile.items;
+  if (!items) return;
+  const keys = item ? [item] : Object.keys(items);
+  for (const key of keys) {
+    const avail = items[key] ?? 0;
+    if (avail <= 0) continue;
+    const w = itemWeight(key);
+    const room = unitCapacity(unit) - unitLoad(unit);
+    const fits = w > 0 ? Math.floor(room / w) : avail;
+    const want = qty != null ? Math.min(qty, avail) : avail;
+    const take = Math.max(0, Math.min(want, fits));
+    if (take <= 0) continue;
+    unit.inventory[key] = (unit.inventory[key] ?? 0) + take;
+    items[key] = avail - take;
+    if (items[key]! <= 0) delete items[key];
+  }
+  if (Object.keys(items).length === 0) tile.items = undefined;
 }
 
 /** Cancel every kind of job/path a unit might be running, so a new command
@@ -343,6 +421,7 @@ function clearJobs(unit: Unit): void {
   unit.job = undefined;
   unit.craftJob = undefined;
   unit.buildJob = undefined;
+  unit.haulJob = undefined;
   unit.path = undefined;
   unit.moveGoal = undefined;
 }
@@ -407,6 +486,12 @@ function stepUnit(world: World, unit: Unit): void {
   // Building needs the unit adjacent to the site, then work down like harvesting.
   if (unit.buildJob) {
     stepBuild(world, unit);
+    return;
+  }
+
+  // Hauling: walk onto the target tile, then drop/pick up in one tick.
+  if (unit.haulJob) {
+    stepHaul(world, unit);
     return;
   }
 
@@ -484,6 +569,31 @@ function stepBuild(world: World, unit: Unit): void {
   const tile = tileAt(world, at.x, at.y)!;
   tile.building = id;
   unit.buildJob = undefined;
+}
+
+/** One tick of a haul job: get the unit standing ON the target tile (re-pathing
+ *  if the path fell short, giving up if it's now unreachable), then perform the
+ *  drop or pickup and clear the job. */
+function stepHaul(world: World, unit: Unit): void {
+  const job = unit.haulJob!;
+  const { at } = job;
+  if (unit.pos.x !== at.x || unit.pos.y !== at.y) {
+    const path = bfsPath(world, unit.pos, (cx, cy) => cx === at.x && cy === at.y, unit.id);
+    if (path && path.length > 0) {
+      unit.path = path;
+      unit.moveCooldown = 0;
+    } else {
+      unit.haulJob = undefined; // can't reach the tile anymore
+    }
+    return;
+  }
+  if (job.op === 'drop') {
+    if (job.item) performDrop(world, unit, job.item, job.qty ?? 0, at);
+  } else {
+    const tile = tileAt(world, at.x, at.y);
+    if (tile) performPickup(unit, tile, job.item, job.qty);
+  }
+  unit.haulJob = undefined;
 }
 
 /** Do one tick of work on the target object. Gather is instantaneous and leaves

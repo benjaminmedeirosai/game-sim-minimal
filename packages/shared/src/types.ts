@@ -65,6 +65,18 @@ export interface BuildJob {
   total?: number;
 }
 
+/** Carrying resources to/from a spot: the unit walks ONTO `at` (a ground tile),
+ *  then transfers in one tick. `drop` moves `item`×`qty` from bag to ground;
+ *  `pickup` loads ground items into the bag (all of `item`, or every item on
+ *  the tile when `item` is absent) up to what the bag can still carry. Mutually
+ *  exclusive with the other jobs. */
+export interface HaulJob {
+  op: 'drop' | 'pickup';
+  at: Coord;
+  item?: string;
+  qty?: number;
+}
+
 export interface Unit {
   id: string;
   kind: 'human';
@@ -97,6 +109,9 @@ export interface Unit {
   craftJob?: CraftJob;
   /** Active building job (mutually exclusive with job/craftJob). */
   buildJob?: BuildJob;
+  /** Active haul job — carrying resources to/from a tile (mutually exclusive
+   *  with the other jobs). */
+  haulJob?: HaulJob;
 }
 
 export interface Building {

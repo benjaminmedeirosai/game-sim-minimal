@@ -211,6 +211,9 @@ function actionsPrompt(): string {
     '  {"type":"harvest","unitId":"<id>","target":"<cell>"}',
     '  {"type":"craft","unitId":"<id>","recipe":"<id>"}',
     '  {"type":"build","unitId":"<id>","building":"<id>","at":"<cell>"}',
+    '  {"type":"drop","unitId":"<id>","item":"<item>","qty":<int>,"at":"<cell>"}',
+    '  {"type":"dropNearby","unitId":"<id>","item":"<item>","qty":<int>}',
+    '  {"type":"pickup","unitId":"<id>","at":"<cell>"}',
     '  {"type":"cancel","unitId":"<id>"}',
     '',
     '  - A unit that is chopping, mining, crafting, or building is BUSY: it ignores',
@@ -222,6 +225,14 @@ function actionsPrompt(): string {
     '    what is there: a "fruit tree" is GATHERED for fruit (food) and stays',
     '    standing; a plain "tree" is CHOPPED for wood (removed); rock and ore are',
     '    MINED. So harvest a fruit tree for food, a plain tree for wood.',
+    '  - Bags have a weight limit (see "cap"/"load"/"enc%" on each unit line). A',
+    '    heavy bag slows the unit; a FULL unit that keeps harvesting spills the',
+    '    overflow onto the ground as a loose pile (harvesting never stalls). Loose',
+    '    piles in sight are listed as "loose:" in the world snapshot.',
+    '  - drop/dropNearby set carried items down (dropNearby = at the unit\'s feet,',
+    '    drop = walk to a tile first); pickup collects a loose pile into the bag',
+    '    (add "item"/"qty" to take only some). Use these to gather scattered drops',
+    '    into one place, stock a spot, or lighten a unit before a long move.',
     '',
     'Player camera — moves the on-screen view of the player who gave THIS command,',
     'and ONLY that player. It never changes the world and never moves anyone else:',
@@ -387,6 +398,21 @@ export function worldContext(world: World): string {
     return `  ${k}: ${list.length} visible${list.length ? ` at ${at}` : ''}`;
   });
 
+  // Loose resources dropped on the ground (overflow from full harvesters, or set
+  // down via drop), listed by cell so the model can send a unit to pick them up.
+  // Fogged like objects — only piles in current sight appear.
+  const piles: string[] = [];
+  for (let y = 0; y < world.height; y++) {
+    for (let x = 0; x < world.width; x++) {
+      const items = world.tiles[y * world.width + x]?.items;
+      if (!items) continue;
+      const parts = Object.entries(items)
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${n} ${k}`);
+      if (parts.length) piles.push(`  ${toCellXY(x, y)}: ${parts.join(', ')}`);
+    }
+  }
+
   // Notable terrain in view. Terrain isn't fogged in the snapshot (only objects
   // are), so unlike the resource scan above we gate on visibleTiles() by hand —
   // the model should only learn about ground its units have actually seen. Grass
@@ -420,6 +446,10 @@ export function worldContext(world: World): string {
     `Idle units, free to assign right now: ${idleIds.length ? idleIds.join(', ') : 'none'}.`,
     'Resources your units can currently see (fog of war hides the rest):',
     ...resources,
+    piles.length
+      ? 'Loose ground piles you can pick up (cell: items):'
+      : 'Loose ground piles: none in sight',
+    ...piles,
     'Notable terrain in view (all other visible ground is ordinary grass):',
     ...(terrain.length ? terrain : ['  none — all visible ground is grass']),
     builds.length ? 'Buildings:' : 'Buildings: none',

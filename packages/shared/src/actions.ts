@@ -16,6 +16,16 @@ export type Action =
   | { type: 'craft'; unitId: string; recipe: string }
   // Walk to a tile and raise a building there, consuming inventory on completion.
   | { type: 'build'; unitId: string; building: string; at: Coord }
+  // Carry `qty` of `item` from the bag and drop it on the ground at tile `at`
+  // (the unit walks there first). Excess beyond a tile's stack max spills to
+  // nearby ground.
+  | { type: 'drop'; unitId: string; item: string; qty: number; at: Coord }
+  // Drop `qty` of `item` on the ground right where the unit stands — no walking,
+  // placement handled by the sim (spills to nearby ground when the tile is full).
+  | { type: 'dropNearby'; unitId: string; item: string; qty: number }
+  // Pick up loose ground resources at tile `at` into the bag (the unit walks
+  // there first). `item`/`qty` narrow it; omit to grab everything that fits.
+  | { type: 'pickup'; unitId: string; at: Coord; item?: string; qty?: number }
   // Stop a unit's current non-interruptible job (craft/build/harvest), leaving
   // it idle. The one command accepted against a busy unit; craft inputs are
   // refunded (nothing was produced). No-op on an idle/moving unit.
@@ -109,6 +119,14 @@ export function describeAction(action: Action): string {
       return `Craft ${action.recipe}`;
     case 'build':
       return `Build ${action.building} @ ${toCell(action.at)}`;
+    case 'drop':
+      return `Drop ${action.qty} ${action.item} → ${toCell(action.at)}`;
+    case 'dropNearby':
+      return `Drop ${action.qty} ${action.item} nearby`;
+    case 'pickup':
+      return action.item
+        ? `Pick up ${action.qty ?? ''} ${action.item} @ ${toCell(action.at)}`.replace('  ', ' ')
+        : `Pick up @ ${toCell(action.at)}`;
     case 'cancel':
       return 'Cancel job';
   }

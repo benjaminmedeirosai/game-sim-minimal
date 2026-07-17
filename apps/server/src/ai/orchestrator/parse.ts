@@ -77,6 +77,14 @@ function resolveUnitId(raw: unknown, world: World): string | null {
  *  `{ reject }` reason string so the caller can surface WHY it was dropped
  *  (instead of silently swallowing it). setView is handled separately — it is a
  *  view command, not a world action — so it should never reach here. */
+/** A positive integer quantity (accepts a numeric string), or null if invalid. */
+function coerceQty(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  if (!Number.isFinite(n)) return null;
+  const i = Math.floor(n);
+  return i > 0 ? i : null;
+}
+
 function validateAction(raw: unknown, world: World): Action | { reject: string } {
   if (typeof raw !== 'object' || raw === null) return { reject: 'action is not an object' };
   const a = raw as Record<string, unknown>;
@@ -109,6 +117,29 @@ function validateAction(raw: unknown, world: World): Action | { reject: string }
       return at
         ? { type: 'build', unitId, building: a.building, at }
         : { reject: `build: location ${coordStr(a.at)} out of bounds` };
+    }
+    case 'dropNearby': {
+      if (typeof a.item !== 'string') return { reject: 'dropNearby: missing item' };
+      const qty = coerceQty(a.qty);
+      return qty
+        ? { type: 'dropNearby', unitId, item: a.item, qty }
+        : { reject: `dropNearby: bad qty ${JSON.stringify(a.qty)}` };
+    }
+    case 'drop': {
+      if (typeof a.item !== 'string') return { reject: 'drop: missing item' };
+      const qty = coerceQty(a.qty);
+      if (!qty) return { reject: `drop: bad qty ${JSON.stringify(a.qty)}` };
+      const at = coerceCoord(a.at, world);
+      return at
+        ? { type: 'drop', unitId, item: a.item, qty, at }
+        : { reject: `drop: location ${coordStr(a.at)} out of bounds` };
+    }
+    case 'pickup': {
+      const at = coerceCoord(a.at, world);
+      if (!at) return { reject: `pickup: location ${coordStr(a.at)} out of bounds` };
+      const item = typeof a.item === 'string' ? a.item : undefined;
+      const qty = a.qty == null ? undefined : (coerceQty(a.qty) ?? undefined);
+      return { type: 'pickup', unitId, at, ...(item ? { item } : {}), ...(qty ? { qty } : {}) };
     }
     case 'cancel':
       return { type: 'cancel', unitId };
