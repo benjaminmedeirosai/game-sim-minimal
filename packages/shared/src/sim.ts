@@ -142,6 +142,7 @@ function spawnUnits(world: World, rnd: () => number): void {
     const x = Math.floor(rnd() * world.width);
     const y = Math.floor(rnd() * world.height);
     if (!isWalkable(world, x, y)) continue;
+    if (unitAt(world, x, y, '')) continue; // no two units share a spawn tile
     const id = `unit-${placed}`;
     world.units[id] = {
       id,
@@ -168,6 +169,31 @@ export function isWalkable(world: World, x: number, y: number): boolean {
   if (t.object) return false;
   if (t.building) return false;
   return true;
+}
+
+/** True if some unit OTHER than `exceptId` is standing on (x,y) right now. Units
+ *  block each other like impassable terrain — two can never share a tile — so
+ *  this gates both movement steps and pathfinding. */
+function unitAt(world: World, x: number, y: number, exceptId: string): boolean {
+  for (const id in world.units) {
+    if (id === exceptId) continue;
+    const p = world.units[id]!.pos;
+    if (p.x === x && p.y === y) return true;
+  }
+  return false;
+}
+
+/** A W×H grid marking every tile currently occupied by a unit other than
+ *  `exceptId` (1 = occupied). Built once per pathfinding call so the BFS can do
+ *  O(1) occupancy lookups instead of scanning all units per tile. */
+function occupancyGrid(world: World, exceptId: string): Uint8Array {
+  const g = new Uint8Array(world.width * world.height);
+  for (const id in world.units) {
+    if (id === exceptId) continue;
+    const p = world.units[id]!.pos;
+    g[p.y * world.width + p.x] = 1;
+  }
+  return g;
 }
 
 /** Where a new building may be sited: an in-bounds, non-water tile that isn't
@@ -258,8 +284,11 @@ export function applyAction(world: World, action: Action): void {
       // Hard gate: some objects (ore) can't be worked without the right tool.
       const rule = HARVEST_RULES[tile.object.kind];
       if (rule?.require && !unit.tools.includes(rule.require)) return;
-      const path = bfsPath(world, unit.pos, (cx, cy) =>
-        isAdjacent(cx, cy, action.target.x, action.target.y),
+      const path = bfsPath(
+        world,
+        unit.pos,
+        (cx, cy) => isAdjacent(cx, cy, action.target.x, action.target.y),
+        unit.id,
       );
       if (!path) return; // no walkable tile borders the target
       clearJobs(unit);
@@ -284,8 +313,11 @@ export function applyAction(world: World, action: Action): void {
       if (!def) return;
       if (!isBuildable(world, action.at.x, action.at.y)) return;
       if (!canAfford(unit, def.inputs)) return; // firm check now; re-checked on completion
-      const path = bfsPath(world, unit.pos, (cx, cy) =>
-        isAdjacent(cx, cy, action.at.x, action.at.y),
+      const path = bfsPath(
+        world,
+        unit.pos,
+        (cx, cy) => isAdjacent(cx, cy, action.at.x, action.at.y),
+        unit.id,
       );
       if (!path) return; // can't reach a tile next to the site
       clearJobs(unit);
@@ -343,6 +375,15 @@ function stepUnit(world: World, unit: Unit): void {
   if (unit.path && unit.path.length > 0) {
     unit.moveCooldown = (unit.moveCooldown ?? 0) - stepRate(unit);
     if (unit.moveCooldown <= 0) {
+      const step = unit.path[0]!;
+      // Another unit reached this tile first (it moved earlier this tick, or was
+      // already parked here). Two units never share a tile, so drop the path and
+      // let the owning job re-route around it next tick.
+      if (unitAt(world, step.x, step.y, unit.id)) {
+        unit.path = undefined;
+        unit.moveCooldown = 0;
+        return;
+      }
       unit.pos = unit.path.shift()!;
       unit.moveCooldown = UNIT_STEP_TICKS;
     }
@@ -368,7 +409,12 @@ function stepUnit(world: World, unit: Unit): void {
   // Arrived? If not adjacent (path exhausted without reaching), try to re-path
   // once; give up if the target is now unreachable.
   if (!isAdjacent(unit.pos.x, unit.pos.y, target.x, target.y)) {
-    const path = bfsPath(world, unit.pos, (cx, cy) => isAdjacent(cx, cy, target.x, target.y));
+    const path = bfsPath(
+      world,
+      unit.pos,
+      (cx, cy) => isAdjacent(cx, cy, target.x, target.y),
+      unit.id,
+    );
     if (path && path.length > 0) {
       unit.path = path;
       unit.moveCooldown = 0;
@@ -405,7 +451,7 @@ function stepBuild(world: World, unit: Unit): void {
   const { at } = job;
 
   if (!isAdjacent(unit.pos.x, unit.pos.y, at.x, at.y)) {
-    const path = bfsPath(world, unit.pos, (cx, cy) => isAdjacent(cx, cy, at.x, at.y));
+    const path = bfsPath(world, unit.pos, (cx, cy) => isAdjacent(cx, cy, at.x, at.y), unit.id);
     if (path && path.length > 0) {
       unit.path = path;
       unit.moveCooldown = 0;
@@ -504,10 +550,12 @@ function bfsPath(
   world: World,
   start: Coord,
   isGoal: (x: number, y: number) => boolean,
+  exceptId: string,
 ): Coord[] | null {
   if (isGoal(start.x, start.y)) return [];
   const w = world.width;
   const h = world.height;
+  const occupied = occupancyGrid(world, exceptId);
   const startIdx = start.y * w + start.x;
   const visited = new Uint8Array(w * h);
   const prev = new Int32Array(w * h).fill(-1);
@@ -524,7 +572,7 @@ function bfsPath(
       const ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
       const nidx = ny * w + nx;
-      if (visited[nidx] || !isWalkable(world, nx, ny)) continue;
+      if (visited[nidx] || !isWalkable(world, nx, ny) || occupied[nidx]) continue;
       visited[nidx] = 1;
       prev[nidx] = idx;
       if (isGoal(nx, ny)) {
@@ -559,11 +607,16 @@ function stepTravel(world: World, unit: Unit): void {
   // (Re)plan when we have no path, finished one, or the next step is now known
   // to be blocked (a barrier we've just laid eyes on).
   const next = unit.path?.[0];
-  if (!unit.path || unit.path.length === 0 || (next && knownBlocked(world, next.x, next.y))) {
-    const path = planTravel(world, unit.pos, goal);
+  const nextBlocked =
+    next && (knownBlocked(world, next.x, next.y) || unitAt(world, next.x, next.y, unit.id));
+  if (!unit.path || unit.path.length === 0 || nextBlocked) {
+    const path = planTravel(world, unit.pos, goal, unit.id);
     if (!path) {
-      unit.moveGoal = undefined; // nothing reachable is nearer → give up
+      // Nothing reachable is nearer. If we're only boxed in by other units (who
+      // move), wait a tick and retry rather than abandoning the trip; give up
+      // only when terrain truly walls us off.
       unit.path = undefined;
+      if (!isBoxedByUnits(world, unit)) unit.moveGoal = undefined;
       return;
     }
     unit.path = path;
@@ -573,8 +626,8 @@ function stepTravel(world: World, unit: Unit): void {
   unit.moveCooldown = (unit.moveCooldown ?? 0) - stepRate(unit);
   if (unit.moveCooldown <= 0) {
     const step = unit.path![0]!;
-    if (knownBlocked(world, step.x, step.y)) {
-      unit.path = undefined; // discovered blocked this tick; replan next tick
+    if (knownBlocked(world, step.x, step.y) || unitAt(world, step.x, step.y, unit.id)) {
+      unit.path = undefined; // blocked (terrain or another unit) → replan next tick
       unit.moveCooldown = 0;
       return;
     }
@@ -590,13 +643,29 @@ function stepRate(unit: Unit): number {
   return speedMult(encumbrance(unit));
 }
 
+/** Distinguish a transient jam (other units are the only thing in the way — they
+ *  move, so we should wait) from a real dead end (terrain walls us off). True
+ *  when a plan that ignores units could make progress but the unit-aware plan
+ *  can't — i.e. we're merely boxed in by other units. */
+function isBoxedByUnits(world: World, unit: Unit): boolean {
+  return planTravel(world, unit.pos, unit.moveGoal!, unit.id, true) !== null;
+}
+
 /** Optimistic BFS: shortest path to the reachable tile CLOSEST (Manhattan) to
  *  the goal, treating unseen tiles as passable and only known-blocked tiles as
- *  walls. Returns null when no reachable tile is nearer than `start` — the
- *  caller reads that as "can't make progress, give up". */
-function planTravel(world: World, start: Coord, goal: Coord): Coord[] | null {
+ *  walls. Other units count as walls too (units never share a tile) unless
+ *  `ignoreUnits` is set. Returns null when no reachable tile is nearer than
+ *  `start` — the caller reads that as "can't make progress". */
+function planTravel(
+  world: World,
+  start: Coord,
+  goal: Coord,
+  exceptId: string,
+  ignoreUnits = false,
+): Coord[] | null {
   const w = world.width;
   const h = world.height;
+  const occupied = ignoreUnits ? null : occupancyGrid(world, exceptId);
   const startIdx = start.y * w + start.x;
   const visited = new Uint8Array(w * h);
   const prev = new Int32Array(w * h).fill(-1);
@@ -618,7 +687,7 @@ function planTravel(world: World, start: Coord, goal: Coord): Coord[] | null {
       const ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
       const nidx = ny * w + nx;
-      if (visited[nidx] || knownBlocked(world, nx, ny)) continue;
+      if (visited[nidx] || knownBlocked(world, nx, ny) || occupied?.[nidx]) continue;
       visited[nidx] = 1;
       prev[nidx] = idx;
       const d = distTo(nidx);
