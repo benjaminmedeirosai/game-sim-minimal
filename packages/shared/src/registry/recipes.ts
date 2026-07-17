@@ -34,6 +34,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
   campfire: { label: 'Campfire', color: '#8a4b2a', roofColor: '#e08a3c', inputs: { wood: 3 }, workTicks: 10 },
   workbench: { label: 'Workbench', color: '#7a5a34', roofColor: '#a8804a', inputs: { wood: 5, stone: 2 }, workTicks: 14 },
   storage: { label: 'Storage', color: '#5a6068', roofColor: '#8a5a34', inputs: { wood: 4, stone: 3 }, workTicks: 16 },
+  house: { label: 'House', color: '#a8895c', roofColor: '#7a4a3a', inputs: { wood: 6, stone: 2 }, workTicks: 20 },
 };
 
 // How the object under a harvest job responds to tools, keyed by object.kind:

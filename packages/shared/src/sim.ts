@@ -781,11 +781,12 @@ function collectOrDrop(
   }
 }
 
-/** Pile `qty` of `item` onto the ground at `at`, capping each tile's stack at the
- *  item's stack max and spilling the remainder outward (Chebyshev rings) to the
- *  nearest bare-ground tiles with room. Items lie on walkable ground only (never
- *  under an object/building or on water). Any residue with nowhere to go
- *  overfills the origin rather than vanishing. */
+/** Pile `qty` of `item` onto the ground at `at`. A ground tile holds ONE stack of
+ *  ONE resource — that's what makes storage depots (10 stacks in a tile) special
+ *  — so a tile already holding a DIFFERENT resource is skipped; the remainder
+ *  spills outward (Chebyshev rings) to the nearest empty (or same-item) walkable
+ *  ground. Items never sit under an object/building or on water. Anything with
+ *  nowhere to land within range overfills the origin rather than vanishing. */
 function dropOnGround(world: World, at: Coord, item: string, qty: number): void {
   const max = itemStack(item);
   let remaining = qty;
@@ -793,14 +794,17 @@ function dropOnGround(world: World, at: Coord, item: string, qty: number): void 
     if (remaining <= 0) return;
     const t = tileAt(world, x, y);
     if (!t || t.object || t.building || t.terrain === 'water') return;
-    const items = (t.items ??= {});
-    const room = max - (items[item] ?? 0);
+    // One resource per ground tile: reject a tile already holding a different one.
+    const keys = t.items ? Object.keys(t.items) : [];
+    if (keys.length > 0 && !(keys.length === 1 && keys[0] === item)) return;
+    const cur = t.items?.[item] ?? 0;
+    const room = max - cur;
     if (room <= 0) return;
     const put = Math.min(room, remaining);
-    items[item] = (items[item] ?? 0) + put;
+    (t.items ??= {})[item] = cur + put;
     remaining -= put;
   };
-  for (let radius = 0; radius <= 6 && remaining > 0; radius++) {
+  for (let radius = 0; radius <= 10 && remaining > 0; radius++) {
     if (radius === 0) {
       tryTile(at.x, at.y);
       continue;
@@ -812,11 +816,13 @@ function dropOnGround(world: World, at: Coord, item: string, qty: number): void 
       }
     }
   }
+  // Last resort (every reachable tile is taken): overfill the origin, but only if
+  // it's empty or already holds THIS item — never stack a second resource there.
   if (remaining > 0) {
     const t = tileAt(world, at.x, at.y);
-    if (t) {
-      const items = (t.items ??= {});
-      items[item] = (items[item] ?? 0) + remaining;
+    const keys = t?.items ? Object.keys(t.items) : [];
+    if (t && (keys.length === 0 || (keys.length === 1 && keys[0] === item))) {
+      (t.items ??= {})[item] = (t.items[item] ?? 0) + remaining;
     }
   }
 }
