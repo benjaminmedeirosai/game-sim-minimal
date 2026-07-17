@@ -336,8 +336,18 @@ function updateInfo(info: HTMLElement): void {
           : 'idle';
 
   const inv = Object.entries(u.inventory);
+  // Each carried stack gets a ⤓ button that drops the whole stack at the unit's
+  // feet (dropNearby). Hidden while busy — a working unit rejects non-cancel
+  // commands, so the button would no-op.
   const invHtml = inv.length
-    ? inv.map(([k, v]) => `<span class="inv-item">${k} ${v}</span>`).join('')
+    ? inv
+        .map(
+          ([k, v]) =>
+            `<span class="inv-item">${k} ${v}` +
+            (busy ? '' : `<button class="inv-drop" data-drop="${k}" data-qty="${v}" title="Drop ${v} ${k} here">⤓</button>`) +
+            `</span>`,
+        )
+        .join('')
     : `<span class="muted">empty</span>`;
 
   const toolsHtml = u.tools.length
@@ -598,7 +608,9 @@ function attachMenu(info: HTMLElement): void {
   );
 
   info.addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-craft],[data-build],[data-cancel]');
+    const btn = (e.target as HTMLElement).closest<HTMLElement>(
+      '[data-craft],[data-build],[data-cancel],[data-drop]',
+    );
     if (!btn) return;
     const selId = selection.get().unitId;
     if (!selId) return;
@@ -606,6 +618,10 @@ function attachMenu(info: HTMLElement): void {
       // Stop the unit's current non-interruptible job (refunds craft inputs).
       sendAction({ type: 'cancel', unitId: selId });
       selection.set({ pendingBuild: undefined });
+    } else if (btn.dataset.drop) {
+      // Drop the whole carried stack of this item at the unit's feet.
+      const qty = Number(btn.dataset.qty) || 0;
+      if (qty > 0) sendAction({ type: 'dropNearby', unitId: selId, item: btn.dataset.drop, qty });
     } else if (btn.dataset.craft) {
       sendAction({ type: 'craft', unitId: selId, recipe: btn.dataset.craft });
       selection.set({ pendingBuild: undefined });
@@ -653,6 +669,10 @@ function handleClick(e: PointerEvent, container: HTMLElement, view: View): void 
   const tile = tileAt(world, x, y);
   if (tile?.object) {
     sendAction({ type: 'harvest', unitId: selId, target: { x, y } });
+  } else if (tile?.items) {
+    // Loose pile on the ground → send the unit to pick it up (mirrors the
+    // click-an-object-to-harvest gesture).
+    sendAction({ type: 'pickup', unitId: selId, at: { x, y } });
   } else {
     // Any other tile — walkable, water, or still under fog — issues a
     // best-effort move. We deliberately DON'T pre-check walkability here: a

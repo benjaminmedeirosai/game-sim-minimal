@@ -206,6 +206,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: #0f1117; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px;
 }
 .inv-item.tool { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
+/* ⤓ drop-stack button tucked inside each carried-item pill. */
+.inv-drop {
+  margin-left: 4px; padding: 0 2px; border: none; background: none; cursor: pointer;
+  color: var(--muted); font-size: 11px; line-height: 1; border-radius: 4px;
+}
+.inv-drop:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .muted { color: var(--muted); }
 
 /* ---- unit stats + bag fill + cancel + job progress ---- */
