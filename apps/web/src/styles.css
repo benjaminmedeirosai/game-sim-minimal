@@ -311,6 +311,17 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: #a78bfa; border-radius: 4px; padding: 1px 4px;
 }
 .act-desc { font-size: 12px; }
+/* Which unit ran the action — a compact monospace chip (e.g. "U0"), shared by
+   the Actions panel and the AI-history action list. */
+.act-unit {
+  flex: 0 0 auto; font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: #9fb2d6; background: #1b2233; border-radius: 4px; padding: 1px 4px;
+}
+.ai-acts .act-unit { margin-right: 4px; }
+/* In-flight action progress in the Actions panel — a slim bar mirroring the
+   unit inspector's job bar. */
+.act-progress { height: 4px; border-radius: 999px; background: #1b2233; overflow: hidden; margin-top: 1px; }
+.act-fill { height: 100%; width: 0; border-radius: 999px; background: var(--accent); transition: width 0.2s linear; }
 /* Per-action outcome glyph, shared by the Actions panel and AI History: amber
    spinner while running, green ✓ done, muted ⊘ interrupted, red ✕ failed. */
 .act-status { flex: 0 0 auto; font-size: 11px; line-height: 1; }

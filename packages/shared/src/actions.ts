@@ -79,6 +79,20 @@ export interface ActionRecord {
   /** Live execution status, updated in place by the host as the sim runs.
    *  Optional so older saves (and any record mid-flight) default gracefully. */
   status?: ActionStatus;
+  /** Live progress of the job this action is running (0 → done), updated in
+   *  place by the host each tick while `status === 'ongoing'` and cleared when
+   *  it resolves. Present only for jobs that HAVE a measurable duration —
+   *  harvest (object hp), craft, build — never for a plain move. Lets the
+   *  Actions panel show the same bar the unit inspector does. */
+  progress?: { remaining: number; total: number };
+}
+
+/** Compact label for a unit id — "unit-0" → "U0" — for the Actions panel and AI
+ *  history, where the full id is noise. Falls back to the raw id if it doesn't
+ *  match the spawn naming. */
+export function unitShort(unitId: string): string {
+  const m = /^unit-(\d+)$/.exec(unitId);
+  return m ? `U${m[1]}` : unitId;
 }
 
 /** A short human-readable label for an action, e.g. "Craft pickaxe" or

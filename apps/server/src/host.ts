@@ -16,6 +16,7 @@ import {
   fogWorld,
   generateWorld,
   normalizeSettings,
+  OBJECT_HP,
   tick,
   tileAt,
 } from '@game/shared';
@@ -32,6 +33,7 @@ import type {
   MemoryOp,
   MemoryRevision,
   PlayerCameraView,
+  Unit,
   World,
   WorldSettings,
 } from '@game/shared';
@@ -336,9 +338,38 @@ export class Host {
       }
       if (outcome) {
         rec.status = outcome;
+        rec.progress = undefined; // finished — drop the bar
         this.unitAction.delete(unitId);
+      } else {
+        rec.progress = Host.jobProgress(this.world, unit, a); // still running
       }
     }
+  }
+
+  /** Current progress of the job an ongoing action is running, for the Actions
+   *  panel's bar. Harvest measures the target object's remaining hp against its
+   *  starting hp; craft/build read the job's own tick counter. A plain move has
+   *  no measurable duration → undefined (no bar). */
+  private static jobProgress(
+    world: World,
+    unit: Unit,
+    a: Action,
+  ): { remaining: number; total: number } | undefined {
+    if (a.type === 'harvest') {
+      const obj = tileAt(world, a.target.x, a.target.y)?.object;
+      if (!obj) return undefined;
+      const total = OBJECT_HP[obj.kind] ?? obj.hp;
+      return { remaining: Math.max(0, obj.hp), total };
+    }
+    if (a.type === 'craft' && unit.craftJob) {
+      const j = unit.craftJob;
+      return { remaining: j.remaining, total: j.total ?? j.remaining };
+    }
+    if (a.type === 'build' && unit.buildJob) {
+      const j = unit.buildJob;
+      return { remaining: j.remaining, total: j.total ?? j.remaining };
+    }
+    return undefined;
   }
 
   /** Write the full session to disk durably. Used by the autosave loop and by

@@ -7,7 +7,7 @@
 // An agent selector switches which agent you're inspecting (one today, more
 // later). Data comes from the host on demand via { m: 'aiHistoryReq' }, and an
 // open window refetches when the host reports a new exchange (aiEvents).
-import { describeAction, describeView } from '@game/shared';
+import { describeAction, describeView, unitShort } from '@game/shared';
 import type {
   Action,
   ActionRecord,
@@ -205,7 +205,10 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   function exchangeCard(x: AiExchange, prev: AiExchange | undefined, status: Map<string, ActionStatus>): string {
     const acts = x.output.actions.length
       ? `<ul class="ai-acts">${x.output.actions
-          .map((a) => `<li>${actionStatusMark(status.get(actionSig(a, x.tick)))}${esc(describeAction(a))}</li>`)
+          .map(
+            (a) =>
+              `<li>${actionStatusMark(status.get(actionSig(a, x.tick)))}<span class="act-unit">${esc(unitShort(a.unitId))}</span>${esc(describeAction(a))}</li>`,
+          )
           .join('')}</ul>`
       : `<div class="ai-none">no actions</div>`;
     const err = x.output.error ? `<div class="ai-err">${esc(x.output.error)}</div>` : '';
