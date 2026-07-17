@@ -385,18 +385,22 @@ function updateInfo(info: HTMLElement): void {
     return `<button class="menu-btn ${active}" data-build="${bid}" ${dis}>${def.label}<span class="menu-cost">${costLabel(def.inputs)}</span></button>`;
   }).join('');
 
-  // Progress bar for the timed jobs (craft/build). The fill width + meta text
-  // are refreshed each snapshot by updateProgress WITHOUT rebuilding the panel,
-  // so the timer animates while the buttons stay clickable.
-  const timed = u.craftJob ?? u.buildJob;
-  const progressHtml = timed
-    ? `<div class="job-progress"><div class="job-fill"></div></div><div class="job-meta"></div>`
-    : '';
-
   // ✕ cancel: only for a busy (non-interruptible) unit. Idle/moving units have
   // nothing to cancel, so it's absent then.
   const cancelBtn = busy
     ? `<button class="sel-cancel" data-cancel="1" title="Cancel action" aria-label="Cancel action">✕</button>`
+    : '';
+
+  // The ✕ shares a row with the job's progress bar, so cancel sits with the
+  // thing it stops. The bar itself shows only for timed jobs (craft/build) —
+  // its fill width + meta text are refreshed each snapshot by updateProgress
+  // WITHOUT rebuilding the panel, so the timer animates while buttons stay
+  // clickable. A harvesting unit is still busy but has no bar, so the row then
+  // carries just the ✕.
+  const timed = u.craftJob ?? u.buildJob;
+  const barHtml = timed ? `<div class="job-progress"><div class="job-fill"></div></div>` : '';
+  const progressHtml = busy
+    ? `<div class="job-bar">${barHtml}${cancelBtn}</div>${timed ? '<div class="job-meta"></div>' : ''}`
     : '';
 
   const hint = pendingBuild
@@ -424,7 +428,7 @@ function updateInfo(info: HTMLElement): void {
 
   info.innerHTML =
     `<div class="sel-head"><b>${u.id}</b> <span class="muted">(${u.pos.x}, ${u.pos.y})</span>` +
-    ` <span class="sel-doing">${doing}</span>${cancelBtn}</div>` +
+    ` <span class="sel-doing">${doing}</span></div>` +
     `<div class="sel-stats">${statsHtml}</div>` +
     `<div class="sel-row"><span class="sel-label">Tools</span>${toolsHtml}</div>` +
     `<div class="sel-row"><span class="sel-label">Bag</span>${bagHtml}</div>` +

@@ -210,7 +210,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 
 /* ---- unit stats + bag fill + cancel + job progress ---- */
 .sel-cancel {
-  margin-left: 6px; width: 18px; height: 18px; flex: none; padding: 0;
+  width: 18px; height: 18px; flex: none; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
   background: color-mix(in srgb, #e5484d 22%, transparent);
   border: 1px solid color-mix(in srgb, #e5484d 55%, var(--border));
@@ -232,8 +232,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .bag-fill.lvl-red { background: #e5844b; }
 .bag-fill.lvl-black { background: #111318; border-right: 1px solid #444; }
 .bag-num { font-size: 10px; font-variant-numeric: tabular-nums; color: var(--muted); }
+/* Progress bar + ✕ cancel share one row; the bar flexes to fill, ✕ pins right
+   (so a barless harvest job still shows the ✕ at the right edge). */
+.job-bar { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.job-bar .sel-cancel { margin-left: auto; }
 .job-progress {
-  margin-top: 9px; height: 7px; border-radius: 999px;
+  flex: 1; height: 7px; border-radius: 999px;
   background: #0f1117; border: 1px solid var(--border); overflow: hidden;
 }
 .job-fill { height: 100%; width: 0; border-radius: 999px; background: var(--accent); transition: width 0.2s linear; }
