@@ -1,5 +1,6 @@
 export * from './config.js';
 export * from './actions.js';
+export * from './coords.js';
 export * from './ai.js';
 export * from './protocol.js';
 export * from './store.js';

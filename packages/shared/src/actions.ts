@@ -3,6 +3,7 @@
 // these; the host validates and applies each through sim.applyAction. There is
 // no other way to mutate the authoritative world, which keeps UI and AI honest
 // and makes every mutation reproducible.
+import { toCell } from './coords.js';
 import type { Coord } from './types.js';
 
 export type Action =
@@ -32,10 +33,10 @@ export type ActionType = Action['type'];
 export type ViewCommand = { type: 'setView'; center?: Coord; tilesAcross?: number };
 
 /** A short human-readable label for a view command, for the AI history + chat
- *  (e.g. "View → (12, 8), zoom 18 across"). Mirrors describeAction. */
+ *  (e.g. "View → M9, zoom 18 across"). Mirrors describeAction. */
 export function describeView(v: ViewCommand): string {
   const bits: string[] = [];
-  if (v.center) bits.push(`View → (${v.center.x}, ${v.center.y})`);
+  if (v.center) bits.push(`View → ${toCell(v.center)}`);
   if (v.tilesAcross != null) bits.push(`zoom ${v.tilesAcross} across`);
   return bits.length ? bits.join(', ') : 'View unchanged';
 }
@@ -64,18 +65,19 @@ export interface ActionRecord {
 }
 
 /** A short human-readable label for an action, e.g. "Craft pickaxe" or
- *  "Move → (12, 8)". Used by the Actions panel and AI history. Kept here so UI
- *  and any future logging share one phrasing. */
+ *  "Move → M9". Used by the Actions panel and AI history. Coordinates render as
+ *  spreadsheet-style cells (see coords.ts) so the log matches the language the
+ *  player and AI use. Kept here so UI and any future logging share one phrasing. */
 export function describeAction(action: Action): string {
   switch (action.type) {
     case 'move':
-      return `Move → (${action.to.x}, ${action.to.y})`;
+      return `Move → ${toCell(action.to)}`;
     case 'harvest':
-      return `Harvest (${action.target.x}, ${action.target.y})`;
+      return `Harvest ${toCell(action.target)}`;
     case 'craft':
       return `Craft ${action.recipe}`;
     case 'build':
-      return `Build ${action.building} @ (${action.at.x}, ${action.at.y})`;
+      return `Build ${action.building} @ ${toCell(action.at)}`;
     case 'cancel':
       return 'Cancel job';
   }
