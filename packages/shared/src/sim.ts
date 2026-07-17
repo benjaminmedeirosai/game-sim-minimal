@@ -2,6 +2,7 @@
 // networking, no rendering — the host, and later client-side prediction and
 // tests, all run this same code.
 import type { Action } from './actions.js';
+import { UNIT_STEP_TICKS } from './config.js';
 import { mulberry32, pick } from './rng.js';
 import {
   TREES,
@@ -15,8 +16,10 @@ import {
   RECIPES,
   BUILDINGS,
   HARVEST_RULES,
-  HARVEST_POWER,
+  OBJECT_DEFENSE,
 } from './registry/recipes.js';
+import { DEFAULT_BAG_CAPACITY } from './registry/items.js';
+import { encumbrance, harvestDamage, isEncumbered, objectDefense, speedMult } from './stats.js';
 import { tileAt } from './types.js';
 import type { Coord, Tile, TerrainType, Unit, World, WorldObject, WorldSettings } from './types.js';
 import { visibleTiles } from './vision.js';
@@ -26,8 +29,6 @@ const MAX_DIM = 120;
 
 // How many humans a fresh world starts with.
 const SPAWN_UNITS = 4;
-// Ticks between walk steps — units move 1 tile every this many ticks.
-const UNIT_STEP_TICKS = 2;
 // Global multiplier on how long manual work takes: object hit-points (chop/mine)
 // and craft/build durations are all scaled by this. Bumping it makes harvesting
 // and construction feel weighty rather than instant.
@@ -35,8 +36,9 @@ const WORK_SCALE = 10;
 // Fruit picked in a single gather (non-destructive; leaves the tree standing).
 const FRUIT_YIELD: Record<string, number> = { fruit: 3 };
 
-// Starting hit-points per harvestable object kind. Chop/mine chip HARVEST_POWER
-// per tick, so hp is effectively "work required". Exported (and used by
+// Starting hit-points per harvestable object kind. Chop/mine remove
+// `damage / defense` per tick (see stats.harvestDamage / objectDefense), so hp
+// is "work required" scaled by how hard the object is. Exported (and used by
 // worldgen below) so the AI prompt can quote exact durations without drifting
 // from the numbers the sim actually runs.
 export const OBJECT_HP = {
@@ -141,7 +143,17 @@ function spawnUnits(world: World, rnd: () => number): void {
     const y = Math.floor(rnd() * world.height);
     if (!isWalkable(world, x, y)) continue;
     const id = `unit-${placed}`;
-    world.units[id] = { id, kind: 'human', pos: { x, y }, inventory: {}, tools: [] };
+    world.units[id] = {
+      id,
+      kind: 'human',
+      pos: { x, y },
+      inventory: {},
+      tools: [],
+      maxHp: 100,
+      hp: 100,
+      armor: 0,
+      capacity: DEFAULT_BAG_CAPACITY,
+    };
     placed++;
   }
 }
@@ -169,15 +181,21 @@ export function isBuildable(world: World, x: number, y: number): boolean {
 function rollObject(terrain: TerrainType, rnd: () => number): WorldObject | undefined {
   if (terrain === 'grass') {
     if (rnd() < 0.1) {
-      return { kind: 'tree', type: pick(TREE_TYPES, rnd), hasFruit: rnd() < 0.3, hp: OBJECT_HP.tree };
+      return {
+        kind: 'tree',
+        type: pick(TREE_TYPES, rnd),
+        hasFruit: rnd() < 0.3,
+        hp: OBJECT_HP.tree,
+        defense: OBJECT_DEFENSE.tree,
+      };
     }
     if (rnd() < 0.02) {
-      return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: OBJECT_HP.rock };
+      return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: OBJECT_HP.rock, defense: OBJECT_DEFENSE.rock };
     }
   } else if (terrain === 'stone') {
     const r = rnd();
-    if (r < 0.25) return { kind: 'ore', type: pick(ORE_TYPES, rnd), hp: OBJECT_HP.ore };
-    if (r < 0.6) return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: OBJECT_HP.rock };
+    if (r < 0.25) return { kind: 'ore', type: pick(ORE_TYPES, rnd), hp: OBJECT_HP.ore, defense: OBJECT_DEFENSE.ore };
+    if (r < 0.6) return { kind: 'rock', type: pick(ROCK_TYPES, rnd), hp: OBJECT_HP.rock, defense: OBJECT_DEFENSE.rock };
   }
   return undefined;
 }
@@ -203,7 +221,25 @@ export function applyAction(world: World, action: Action): void {
   const unit = world.units[action.unitId];
   if (!unit) return;
 
+  // Non-interruptible while working: a unit chopping/mining/crafting/building
+  // (or walking to such a job) ignores every command except `cancel`. This is
+  // also what stops the craft double-spend — spamming "craft" on a busy unit no
+  // longer re-deducts inputs and restarts the job. A plain move sets moveGoal/
+  // path with NO job, so it stays interruptible (isn't "busy").
+  const busy = !!(unit.job || unit.craftJob || unit.buildJob);
+  if (busy && action.type !== 'cancel') return;
+
   switch (action.type) {
+    case 'cancel': {
+      // Refund reserved craft inputs — nothing was produced. (Build inputs are
+      // only deducted on completion, so there's nothing to give back there.)
+      if (unit.craftJob) {
+        const recipe = RECIPES[unit.craftJob.recipe];
+        if (recipe) refundInputs(unit, recipe.inputs);
+      }
+      clearJobs(unit);
+      return;
+    }
     case 'move': {
       const { x, y } = action.to;
       if (x < 0 || y < 0 || x >= world.width || y >= world.height) return;
@@ -239,7 +275,8 @@ export function applyAction(world: World, action: Action): void {
       if (!canAfford(unit, recipe.inputs)) return;
       deductInputs(unit, recipe.inputs); // reserve the cost up front
       clearJobs(unit);
-      unit.craftJob = { recipe: action.recipe, remaining: recipe.workTicks * WORK_SCALE };
+      const craftTicks = recipe.workTicks * WORK_SCALE;
+      unit.craftJob = { recipe: action.recipe, remaining: craftTicks, total: craftTicks };
       return;
     }
     case 'build': {
@@ -254,7 +291,8 @@ export function applyAction(world: World, action: Action): void {
       clearJobs(unit);
       unit.path = path;
       unit.moveCooldown = 0;
-      unit.buildJob = { building: action.building, at: { ...action.at }, remaining: def.workTicks * WORK_SCALE };
+      const buildTicks = def.workTicks * WORK_SCALE;
+      unit.buildJob = { building: action.building, at: { ...action.at }, remaining: buildTicks, total: buildTicks };
       return;
     }
   }
@@ -284,6 +322,13 @@ function deductInputs(unit: Unit, cost: Record<string, number>): void {
   }
 }
 
+/** Give back a previously-deducted cost (used when a craft is cancelled). */
+function refundInputs(unit: Unit, cost: Record<string, number>): void {
+  for (const key in cost) {
+    unit.inventory[key] = (unit.inventory[key] ?? 0) + cost[key]!;
+  }
+}
+
 function stepUnit(world: World, unit: Unit): void {
   // Best-effort travel toward a clicked destination (fog-aware, may give up).
   if (unit.moveGoal) {
@@ -291,9 +336,12 @@ function stepUnit(world: World, unit: Unit): void {
     return;
   }
 
-  // Walking takes priority: one tile per UNIT_STEP_TICKS ticks.
+  // Walking takes priority: base cadence is UNIT_STEP_TICKS ticks/tile, but a
+  // heavy bag slows it — we bleed the cooldown down by the encumbrance-scaled
+  // rate (fractional) rather than a flat 1, so effective ticks/tile stretch
+  // smoothly with load (see stepRate / stats.speedMult).
   if (unit.path && unit.path.length > 0) {
-    unit.moveCooldown = (unit.moveCooldown ?? 0) - 1;
+    unit.moveCooldown = (unit.moveCooldown ?? 0) - stepRate(unit);
     if (unit.moveCooldown <= 0) {
       unit.pos = unit.path.shift()!;
       unit.moveCooldown = UNIT_STEP_TICKS;
@@ -390,6 +438,11 @@ function stepBuild(world: World, unit: Unit): void {
  *  object is depleted. */
 function workObject(unit: Unit, tile: Tile, verb: 'chop' | 'mine' | 'gather'): void {
   const obj = tile.object!;
+  // A full bag can't take any more — stop rather than harvesting into the void.
+  if (isEncumbered(unit)) {
+    unit.job = undefined;
+    return;
+  }
   if (verb === 'gather') {
     if (obj.kind === 'tree' && obj.hasFruit) {
       addYield(unit, FRUIT_YIELD);
@@ -404,9 +457,10 @@ function workObject(unit: Unit, tile: Tile, verb: 'chop' | 'mine' | 'gather'): v
     unit.job = undefined;
     return;
   }
-  // The matching tool chips faster; bare hands still work (except gated objects).
-  const power = rule?.boost && unit.tools.includes(rule.boost) ? HARVEST_POWER.boosted : HARVEST_POWER.base;
-  obj.hp -= power;
+  // Damage vs defense: remove `damage / defense` hp this tick. The matching tool
+  // deals far more damage (and, for mining, a ×2 modifier), so high-defense ore
+  // is where a pickaxe pays off; bare hands still work on ungated objects.
+  obj.hp -= harvestDamage(verb, unit.tools) / objectDefense(obj);
   if (obj.hp <= 0) {
     addYield(unit, yieldsFor(obj));
     tile.object = undefined;
@@ -516,7 +570,7 @@ function stepTravel(world: World, unit: Unit): void {
     unit.moveCooldown = 0;
   }
 
-  unit.moveCooldown = (unit.moveCooldown ?? 0) - 1;
+  unit.moveCooldown = (unit.moveCooldown ?? 0) - stepRate(unit);
   if (unit.moveCooldown <= 0) {
     const step = unit.path![0]!;
     if (knownBlocked(world, step.x, step.y)) {
@@ -528,6 +582,12 @@ function stepTravel(world: World, unit: Unit): void {
     unit.pos = step;
     unit.moveCooldown = UNIT_STEP_TICKS;
   }
+}
+
+/** Per-tick movement progress for a unit: 1 tick of cooldown when unencumbered,
+ *  less when the bag is heavy (so a tile takes proportionally longer). */
+function stepRate(unit: Unit): number {
+  return speedMult(encumbrance(unit));
 }
 
 /** Optimistic BFS: shortest path to the reachable tile CLOSEST (Manhattan) to
