@@ -53,6 +53,20 @@ export type ActionSource =
   // triggered it (absent when the AI acts autonomously / on standing orders).
   | { kind: 'ai'; agent: string; onBehalfOf?: string };
 
+/** How an action's execution turned out, tracked by the host as the sim plays it
+ *  out over subsequent ticks (the pure sim doesn't know about records, so the
+ *  host derives this by watching the unit's job/position):
+ *   - 'ongoing'     — the job it started is still running (walking, harvesting,
+ *                     crafting, building).
+ *   - 'done'        — finished with its intended effect (arrived / object
+ *                     depleted / building raised / tool crafted).
+ *   - 'interrupted' — explicitly cancelled, or superseded by a later command on
+ *                     the same unit before it could finish.
+ *   - 'error'       — the job ended WITHOUT its effect (couldn't reach, lacked a
+ *                     required tool, boxed in) or never started (rejected on
+ *                     apply). */
+export type ActionStatus = 'ongoing' | 'done' | 'interrupted' | 'error';
+
 /** One action as it happened in the world: the pure Action plus who submitted
  *  it and when. The host keeps a capped ring of these and ships a tail in each
  *  snapshot so every client can render the Actions panel. */
@@ -62,6 +76,9 @@ export interface ActionRecord {
   source: ActionSource;
   /** World tick when the action was dispatched. */
   tick: number;
+  /** Live execution status, updated in place by the host as the sim runs.
+   *  Optional so older saves (and any record mid-flight) default gracefully. */
+  status?: ActionStatus;
 }
 
 /** A short human-readable label for an action, e.g. "Craft pickaxe" or

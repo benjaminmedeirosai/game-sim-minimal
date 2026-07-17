@@ -17,11 +17,14 @@ import {
   generateWorld,
   normalizeSettings,
   tick,
+  tileAt,
 } from '@game/shared';
 import type {
   Action,
   ActionRecord,
   ActionSource,
+  ActionStatus,
+  Coord,
   AiExchange,
   AiPending,
   HostResources,
@@ -125,6 +128,12 @@ export class Host {
   private nextDeadline = performance.now();
   // Attributed record of recent actions (any submitter), newest last.
   private actionLog: ActionRecord[] = [];
+  // The action each unit is currently executing (record id + info needed to
+  // resolve its outcome), so a job finishing/aborting can be attributed back to
+  // the action that started it. A unit has at most one in-flight action; a new
+  // command supersedes (interrupts) the old one. Rebuilt from scratch each
+  // session — not persisted (a resume shows loaded actions as-is).
+  private unitAction = new Map<string, { recId: string; type: Action['type']; verb?: string }>();
   // Full request/response audit per AI agent, newest last.
   private aiHistory = new Map<string, AiExchange[]>();
   // Commands accepted but not yet answered, per agent (running + queued),
@@ -210,12 +219,126 @@ export class Host {
    *  All world writes funnel through here; the next snapshot carries the
    *  result and the updated action log. */
   dispatch(action: Action, source: ActionSource): void {
-    this.actionLog.push({ id: randomUUID(), action, source, tick: this.world.tick });
+    const rec: ActionRecord = { id: randomUUID(), action, source, tick: this.world.tick, status: 'ongoing' };
+    this.actionLog.push(rec);
     if (this.actionLog.length > ACTION_LOG_MAX) {
       this.actionLog.splice(0, this.actionLog.length - ACTION_LOG_MAX);
     }
     applyAction(this.world, action);
+    this.resolveInitialStatus(rec);
     this.dirty = true;
+  }
+
+  /** Find a live record by id (the log is short, so a scan is fine). */
+  private recordById(id: string): ActionRecord | undefined {
+    return this.actionLog.find((r) => r.id === id);
+  }
+
+  private static coordEq(a: Coord, b: Coord): boolean {
+    return a.x === b.x && a.y === b.y;
+  }
+
+  /** Set an action's status just after it was applied: cancel resolves instantly
+   *  (and interrupts whatever the unit was doing); a job-creating action starts
+   *  'ongoing' and becomes the unit's in-flight action (superseding any prior
+   *  one), or 'error'/'done' if no job actually took hold. */
+  private resolveInitialStatus(rec: ActionRecord): void {
+    const a = rec.action;
+    const unit = this.world.units[a.unitId];
+    if (a.type === 'cancel') {
+      const prev = this.unitAction.get(a.unitId);
+      if (prev) {
+        const pr = this.recordById(prev.recId);
+        if (pr && pr.status === 'ongoing') pr.status = 'interrupted';
+        this.unitAction.delete(a.unitId);
+      }
+      rec.status = 'done';
+      return;
+    }
+    if (!unit) {
+      rec.status = 'error';
+      return;
+    }
+    // A plain move onto the tile the unit already occupies does nothing to walk.
+    if (a.type === 'move' && Host.coordEq(unit.pos, a.to) && !unit.moveGoal) {
+      rec.status = 'done';
+      return;
+    }
+    const started =
+      a.type === 'move'
+        ? !!unit.moveGoal
+        : a.type === 'harvest'
+          ? !!unit.job
+          : a.type === 'craft'
+            ? !!unit.craftJob
+            : a.type === 'build'
+              ? !!unit.buildJob
+              : false;
+    if (!started) {
+      // The busy-guard rejected it, or there was nothing to do (empty target,
+      // unreachable). Nothing will run, so it's a no-op failure.
+      rec.status = 'error';
+      return;
+    }
+    // A new command supersedes whatever this unit was doing (only a plain move is
+    // interruptible this way — the busy-guard blocks new work on a busy unit).
+    const prev = this.unitAction.get(a.unitId);
+    if (prev && prev.recId !== rec.id) {
+      const pr = this.recordById(prev.recId);
+      if (pr && pr.status === 'ongoing') pr.status = 'interrupted';
+    }
+    this.unitAction.set(a.unitId, { recId: rec.id, type: a.type, verb: unit.job?.verb });
+    rec.status = 'ongoing';
+  }
+
+  /** After a tick, resolve any in-flight action whose job has ended: match the
+   *  unit's current state against the action's intent. Called once per tick, so
+   *  a job that completed or aborted this tick is attributed immediately. */
+  private reconcileActionStatus(): void {
+    for (const [unitId, info] of [...this.unitAction]) {
+      const rec = this.recordById(info.recId);
+      if (!rec || rec.status !== 'ongoing') {
+        this.unitAction.delete(unitId);
+        continue;
+      }
+      const unit = this.world.units[unitId];
+      if (!unit) {
+        rec.status = 'error';
+        this.unitAction.delete(unitId);
+        continue;
+      }
+      const a = rec.action;
+      let outcome: ActionStatus | null = null; // null = still ongoing
+      if (a.type === 'move') {
+        if (unit.moveGoal && Host.coordEq(unit.moveGoal, a.to)) outcome = null;
+        else {
+          // The goal cleared: the unit either arrived or settled at the closest
+          // reachable tile. A commanded tile is often unwalkable (a tree/rock the
+          // player clicked toward), so stopping orthogonally adjacent counts as
+          // arrived; only giving up two or more tiles away is a real failure.
+          const dist = Math.abs(unit.pos.x - a.to.x) + Math.abs(unit.pos.y - a.to.y);
+          outcome = dist <= 1 ? 'done' : 'error';
+        }
+      } else if (a.type === 'harvest') {
+        if (unit.job && Host.coordEq(unit.job.target, a.target)) outcome = null;
+        else if (info.verb === 'gather') outcome = 'done'; // fruit taken (tree stays)
+        else {
+          const obj = tileAt(this.world, a.target.x, a.target.y)?.object;
+          outcome = !obj || (obj.hp ?? 1) <= 0 ? 'done' : 'error'; // depleted vs abandoned
+        }
+      } else if (a.type === 'craft') {
+        // Non-interruptible; cancel is handled at cancel time, so a cleared job
+        // means it ran to completion.
+        outcome = unit.craftJob ? null : 'done';
+      } else if (a.type === 'build') {
+        if (unit.buildJob) outcome = null;
+        else outcome = tileAt(this.world, a.at.x, a.at.y)?.building ? 'done' : 'error';
+      }
+      if (outcome) {
+        rec.status = outcome;
+        this.unitAction.delete(unitId);
+      }
+    }
   }
 
   /** Write the full session to disk durably. Used by the autosave loop and by
@@ -515,6 +638,7 @@ export class Host {
     this.aiMemoryLog = [];
     this.memoryRev = 0;
     this.actionLog = [];
+    this.unitAction.clear();
     this.broadcast(this.snapshotMsg());
     // Persist immediately so a restart right after New World resumes the NEW
     // world, not the replaced one.
@@ -538,6 +662,7 @@ export class Host {
     const budgetMs = 1000 / (BASE_TPS * this.speed);
     const start = performance.now();
     tick(this.world);
+    this.reconcileActionStatus(); // attribute any job that finished/aborted this tick
     this.dirty = true; // the sim advanced; the next autosave should persist it
     const durationMs = performance.now() - start;
 
