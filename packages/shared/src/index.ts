@@ -7,6 +7,8 @@ export * from './types.js';
 export * from './rng.js';
 export * from './perf.js';
 export * from './sim.js';
+export * from './stats.js';
 export * from './vision.js';
 export * from './registry/objects.js';
 export * from './registry/recipes.js';
+export * from './registry/items.js';

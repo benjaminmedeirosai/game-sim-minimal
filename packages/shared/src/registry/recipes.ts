@@ -37,7 +37,7 @@ export const BUILDINGS: Record<string, BuildingDef> = {
 };
 
 // How the object under a harvest job responds to tools, keyed by object.kind:
-//   • boost   — holding this tool multiplies work speed (HARVEST_POWER.boosted)
+//   • boost   — holding this tool speeds work up (its TOOL_DAMAGE applies)
 //   • require — the job is impossible without this tool (hard gate)
 export const HARVEST_RULES: Record<string, { require?: string; boost?: string }> = {
   tree: { boost: 'axe' },
@@ -45,8 +45,25 @@ export const HARVEST_RULES: Record<string, { require?: string; boost?: string }>
   ore: { require: 'pickaxe', boost: 'pickaxe' },
 };
 
-// hp chipped per work tick: bare-handed vs. with the matching tool.
-export const HARVEST_POWER = { base: 1, boosted: 3 } as const;
+// --- Harvest damage model -------------------------------------------------
+// Harvesting is damage-vs-defense: each work tick a unit deals `damage` and the
+// object loses `damage / defense` hit-points. So `defense` is how much damage it
+// takes to remove ONE hp — high-defense ore barely budges by hand, which is why
+// the pickaxe (higher damage + a mining multiplier) makes such a difference.
+// Numbers live here so sim, prompt durations, and the UI all read one source.
+
+// Per-object-kind defense (the divisor on incoming damage).
+export const OBJECT_DEFENSE: Record<string, number> = { tree: 1, rock: 2, ore: 4 };
+
+// Damage a unit deals per work tick with nothing in hand.
+export const HAND_DAMAGE = 1;
+
+// Damage each tool deals per work tick when it's the matching tool for the job.
+export const TOOL_DAMAGE: Record<string, number> = { axe: 4, pickaxe: 3 };
+
+// A pickaxe hits rock/ore especially hard: its damage is multiplied by this
+// when mining (so the pickaxe's edge is largest on high-defense ore).
+export const MINING_TOOL_MODIFIER = 2;
 
 export const RECIPE_IDS = Object.keys(RECIPES);
 export const BUILDING_IDS = Object.keys(BUILDINGS);

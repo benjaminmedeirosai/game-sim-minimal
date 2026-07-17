@@ -14,7 +14,11 @@ export type Action =
   // Craft a tool (recipe id) in place, consuming inventory over its work ticks.
   | { type: 'craft'; unitId: string; recipe: string }
   // Walk to a tile and raise a building there, consuming inventory on completion.
-  | { type: 'build'; unitId: string; building: string; at: Coord };
+  | { type: 'build'; unitId: string; building: string; at: Coord }
+  // Stop a unit's current non-interruptible job (craft/build/harvest), leaving
+  // it idle. The one command accepted against a busy unit; craft inputs are
+  // refunded (nothing was produced). No-op on an idle/moving unit.
+  | { type: 'cancel'; unitId: string };
 
 export type ActionType = Action['type'];
 
@@ -72,5 +76,7 @@ export function describeAction(action: Action): string {
       return `Craft ${action.recipe}`;
     case 'build':
       return `Build ${action.building} @ (${action.at.x}, ${action.at.y})`;
+    case 'cancel':
+      return 'Cancel job';
   }
 }

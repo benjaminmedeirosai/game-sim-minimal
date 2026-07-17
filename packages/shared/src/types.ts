@@ -9,10 +9,13 @@ export interface Coord {
 
 export type TerrainType = 'grass' | 'dirt' | 'stone' | 'water' | 'sand';
 
+// `hp` is remaining hit-points; harvesting removes `damage / defense` per tick.
+// `defense` is optional so older saves (which lack it) fall back to the
+// per-kind default via stats.objectDefense().
 export type WorldObject =
-  | { kind: 'tree'; type: string; hasFruit: boolean; hp: number }
-  | { kind: 'rock'; type: string; hp: number }
-  | { kind: 'ore'; type: string; hp: number };
+  | { kind: 'tree'; type: string; hasFruit: boolean; hp: number; defense?: number }
+  | { kind: 'rock'; type: string; hp: number; defense?: number }
+  | { kind: 'ore'; type: string; hp: number; defense?: number };
 
 export interface Tile {
   terrain: TerrainType;
@@ -38,17 +41,22 @@ export interface UnitJob {
   verb: 'chop' | 'mine' | 'gather';
 }
 
-/** Crafting a tool in place: counts down each tick, then adds the tool. */
+/** Crafting a tool in place: counts down each tick, then adds the tool.
+ *  `total` is the starting tick count, kept so the UI can show progress
+ *  (optional for older saves mid-craft — defaults to `remaining`). */
 export interface CraftJob {
   recipe: string;
   remaining: number;
+  total?: number;
 }
 
-/** Raising a building: the unit walks adjacent to `at`, then works it down. */
+/** Raising a building: the unit walks adjacent to `at`, then works it down.
+ *  `total` mirrors CraftJob.total for the progress bar. */
 export interface BuildJob {
   building: string;
   at: Coord;
   remaining: number;
+  total?: number;
 }
 
 export interface Unit {
@@ -58,6 +66,14 @@ export interface Unit {
   inventory: Record<string, number>;
   /** Tools the unit is carrying (gate/speed harvesting; see HARVEST_RULES). */
   tools: string[];
+  /** Combat/vitals stats. Display-only for now (nothing damages units yet);
+   *  all optional so older saves default gracefully via stats.ts helpers.
+   *  hp/maxHp = hit-points, armor = future damage reduction, capacity = bag
+   *  weight the unit can carry before it's fully encumbered. */
+  maxHp?: number;
+  hp?: number;
+  armor?: number;
+  capacity?: number;
   /** How far this unit sees, in tiles. Absent → DEFAULT_VISION_RADIUS. */
   visionRadius?: number;
   /** Remaining tiles to walk (BFS result), excluding the current pos. */
