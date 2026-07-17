@@ -121,9 +121,17 @@ function objectLines(): string {
   ].join('\n');
 }
 
-/** The system prompt: role, output contract, and the full action + registry
- *  reference. Deterministic given the registries, so it's cache-stable. */
-export function systemPrompt(): string {
+// The system message is split into four labeled sections so the Config UI (View
+// Pretty) shows — and can eventually let players tune — each concern on its own:
+// governance (System), the action vocabulary (Actions), the map reference
+// (World reference), and the craft/build registry (Recipes). assemble() joins
+// them, IN THIS ORDER, into one deterministic (cache-stable) system message; the
+// order is unchanging so Ollama's prefix KV-cache still holds across calls.
+
+/** System: who the assistant is, the exact JSON it must return, and the
+ *  always-on governance rules (fog, memory management, global constraints). The
+ *  action/registry *reference* lives in its own sections below. */
+function rolePrompt(): string {
   return [
     'You are the shared AI assistant for a real-time tile-world colony game.',
     'Multiple players share one colony and one you. Turn the current command',
@@ -132,7 +140,8 @@ export function systemPrompt(): string {
     'Respond with ONLY one JSON object, no markdown or code fences:',
     '  {"actions": [ ...action objects... ], "msg": "...", "memory": [ ...ops... ]}',
     '',
-    '  - "actions": the plan (may be [] when there is nothing to do).',
+    '  - "actions": the plan (may be [] when there is nothing to do). Each entry is',
+    '    one of the shapes in the "Actions" section below.',
     '  - "msg": a SHORT reply to the player — one brief line, spoken in the',
     '    colony\'s voice when a "Voice" section is given below (otherwise plain and',
     '    direct). Include one whenever you act on a PLAYER\'s command, or when you',
@@ -148,61 +157,6 @@ export function systemPrompt(): string {
     '      {"op":"del","id":<n>}   remove item #n',
     '    The id is the number shown beside each line in the "Memory" section below.',
     '    A normal task = no "memory" field. See "Memory" below.',
-    '',
-    'Action shapes:',
-    '  {"type":"move","unitId":"<id>","to":{"x":<int>,"y":<int>}}',
-    '  {"type":"harvest","unitId":"<id>","target":{"x":<int>,"y":<int>}}',
-    '  {"type":"craft","unitId":"<id>","recipe":"<id>"}',
-    '  {"type":"build","unitId":"<id>","building":"<id>","at":{"x":<int>,"y":<int>}}',
-    '  {"type":"cancel","unitId":"<id>"}',
-    '  {"type":"setView","center":{"x":<int>,"y":<int>},"tilesAcross":<int>}',
-    '',
-    'A unit that is chopping, mining, crafting, or building is BUSY: it ignores',
-    'every command except cancel until the job finishes. Only idle or plain-moving',
-    'units accept a new task. Use cancel to stop a busy unit\'s current job (e.g. a',
-    'player says "stop unit-2" or you need to redirect it); crafting inputs are',
-    'refunded. cancel on an idle unit does nothing.',
-    '',
-    'Use the EXACT unitId from the world snapshot below (e.g. "unit-0"), quoted as',
-    'a string — never a bare number like 0.',
-    '',
-    'setView moves the on-screen camera of the player who gave THIS command (never',
-    'anyone else, and it does NOT change the world). Use it when they ask to see',
-    'something — "show me unit-2", "look at the lake", "zoom out". "center" pans the',
-    'view to that tile; "tilesAcross" sets the zoom = how many tiles wide to show',
-    '(smaller = zoomed in closer, larger = more of the map). Include either or both.',
-    'The "Player views" section below tells you where each player is currently',
-    'looking and how wide their view is.',
-    '',
-    'Coordinates & directions:',
-    '  - Tiles are addressed by (x, y). (0,0) is the TOP-LEFT corner of the world.',
-    '  - +x = EAST (right on screen); -x = WEST (left).',
-    '  - +y = SOUTH (down on screen); -y = NORTH (up). Larger y is further DOWN.',
-    '  - So: north/up = smaller y, south/down = larger y, east/right = larger x,',
-    '    west/left = smaller x. Use this to read a player\'s intent ("send one north")',
-    '    and to describe things relative to what they see ("the ore to your south").',
-    '',
-    'harvest works the object on the target tile; the verb is inferred from what',
-    'is there:',
-    '  - a "fruit tree" is GATHERED for fruit (food) and stays standing;',
-    '  - a plain "tree" is CHOPPED for wood (removed);',
-    '  - rock and ore are MINED.',
-    'So harvest a fruit tree for food, a plain tree for wood.',
-    '',
-    'Terrain types (the ground a tile is made of):',
-    terrainLines(),
-    'Object types (what can sit on a tile):',
-    objectLines(),
-    '',
-    'Recipes (craft):',
-    recipeLines(),
-    'Buildings (build):',
-    buildingLines(),
-    'Harvest rules:',
-    harvestLines(),
-    `  (Work times are at normal 1× game speed and exclude walking there; the`,
-    `   sim runs ${BASE_TPS} ticks/second, and a higher speed setting shortens`,
-    `   them proportionally.)`,
     '',
     'Fog of war:',
     `  - Each unit only sees tiles within ${DEFAULT_VISION_RADIUS} tiles of itself.`,
@@ -238,6 +192,88 @@ export function systemPrompt(): string {
     '    not leave any idle unit unassigned.',
     '  - Do not invent resource coordinates the snapshot does not list.',
   ].join('\n');
+}
+
+/** Actions: the full vocabulary of plan steps, grouped by what they affect —
+ *  unit control (per-unit commands) vs. the player's own camera. Its own section
+ *  because the action set is what grows most as new mechanics are added. */
+function actionsPrompt(): string {
+  return [
+    'Actions — the steps a plan may contain. Each is ONE JSON object; the "actions"',
+    'array is a list of them. They fall into two groups:',
+    '',
+    'Unit control — commands to a single unit. Use the EXACT unitId from the world',
+    'snapshot below (e.g. "unit-0"), quoted as a string — never a bare number like 0:',
+    '  {"type":"move","unitId":"<id>","to":{"x":<int>,"y":<int>}}',
+    '  {"type":"harvest","unitId":"<id>","target":{"x":<int>,"y":<int>}}',
+    '  {"type":"craft","unitId":"<id>","recipe":"<id>"}',
+    '  {"type":"build","unitId":"<id>","building":"<id>","at":{"x":<int>,"y":<int>}}',
+    '  {"type":"cancel","unitId":"<id>"}',
+    '',
+    '  - A unit that is chopping, mining, crafting, or building is BUSY: it ignores',
+    '    every command except cancel until the job finishes. Only idle or',
+    '    plain-moving units accept a new task. Use cancel to stop a busy unit\'s',
+    '    current job (e.g. a player says "stop unit-2" or you need to redirect it);',
+    '    crafting inputs are refunded. cancel on an idle unit does nothing.',
+    '  - harvest works the object on the target tile; the verb is inferred from',
+    '    what is there: a "fruit tree" is GATHERED for fruit (food) and stays',
+    '    standing; a plain "tree" is CHOPPED for wood (removed); rock and ore are',
+    '    MINED. So harvest a fruit tree for food, a plain tree for wood.',
+    '',
+    'Player camera — moves the on-screen view of the player who gave THIS command,',
+    'and ONLY that player. It never changes the world and never moves anyone else:',
+    '  {"type":"setView","center":{"x":<int>,"y":<int>},"tilesAcross":<int>}',
+    '',
+    '  - Use it when a player asks to SEE something — "show me unit-2", "look at',
+    '    the lake", "zoom out". "center" pans that player\'s view to the tile;',
+    '    "tilesAcross" sets the zoom = how many tiles wide to show (smaller = zoomed',
+    '    in closer, larger = more of the map). Include either or both. The "Player',
+    '    views" section below tells you where each player is currently looking.',
+    '',
+    'Coordinates & directions (for every {x,y} above):',
+    '  - Tiles are addressed by (x, y). (0,0) is the TOP-LEFT corner of the world.',
+    '  - +x = EAST (right on screen); -x = WEST (left).',
+    '  - +y = SOUTH (down on screen); -y = NORTH (up). Larger y is further DOWN.',
+    '  - So: north/up = smaller y, south/down = larger y, east/right = larger x,',
+    '    west/left = smaller x. Use this to read a player\'s intent ("send one north")',
+    '    and to describe things relative to what they see ("the ore to your south").',
+  ].join('\n');
+}
+
+/** World reference: the ground types, what can sit on a tile, and the harvest
+ *  cost/time for each — everything the model needs to reason about terrain and
+ *  gathering. Kept apart from the craft/build registry (Recipes). */
+function worldRefPrompt(): string {
+  return [
+    'Terrain types (the ground a tile is made of):',
+    terrainLines(),
+    'Object types (what can sit on a tile):',
+    objectLines(),
+    'Harvest rules:',
+    harvestLines(),
+    `  (Work times are at normal 1× game speed and exclude walking there; the`,
+    `   sim runs ${BASE_TPS} ticks/second, and a higher speed setting shortens`,
+    `   them proportionally.)`,
+  ].join('\n');
+}
+
+/** Recipes: the craft + build registry (inputs → output). Its own section
+ *  because it's the content most expected to grow. Craft turns carried items
+ *  into an item; build consumes items to raise a structure on a tile. */
+function recipesPrompt(): string {
+  return [
+    'Recipes (craft) — a unit turns inputs it is carrying into an item:',
+    recipeLines(),
+    'Buildings (build) — a unit spends inputs to raise a structure on a tile:',
+    buildingLines(),
+  ].join('\n');
+}
+
+/** The whole system message: the four sections joined in cache-stable order.
+ *  Exported for callers wanting the entire text; the Config UI (View Pretty)
+ *  instead renders each section separately — see `assemble`. */
+export function systemPrompt(): string {
+  return [rolePrompt(), actionsPrompt(), worldRefPrompt(), recipesPrompt()].join('\n\n');
 }
 
 // --- Dynamic tail --------------------------------------------------------
@@ -486,7 +522,14 @@ export function assemble(
   input: AssembleInput = {},
 ): { messages: ChatMessage[]; raw: string; parts: AiPromptPart[] } {
   const { command, submitter, roster = [], history = [], memory = [], cameras = [], voice } = input;
-  const sys = systemPrompt();
+  // The system message is four labeled sections (see their definitions above),
+  // shown separately in View Pretty but concatenated — in this fixed order — into
+  // the one system message actually sent, so the KV-cache prefix stays stable.
+  const role = rolePrompt();
+  const actions = actionsPrompt();
+  const worldRef = worldRefPrompt();
+  const recipes = recipesPrompt();
+  const sys = [role, actions, worldRef, recipes].join('\n\n');
   // The Voice section (persona for "msg") is toggleable/switchable at runtime,
   // so it lives outside the fixed system rules. When active we fold it into the
   // system message (it IS an instruction) AND surface it as its own labeled part
@@ -502,7 +545,10 @@ export function assemble(
   const cmd = commandContext(command ?? '<the player command goes here>', submitter);
 
   const parts: AiPromptPart[] = [
-    { label: 'System', content: sys },
+    { label: 'System', content: role },
+    { label: 'Actions', content: actions },
+    { label: 'World reference', content: worldRef },
+    { label: 'Recipes', content: recipes },
     ...(voiceText ? [{ label: 'Voice', content: voiceText }] : []),
     { label: 'Memory', content: mem },
     { label: 'Players', content: players },
