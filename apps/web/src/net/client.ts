@@ -10,6 +10,7 @@ import type {
   AiConfigView,
   AiExchange,
   AiPending,
+  AiRuntimeStatus,
   ClientMsg,
   HostMsg,
   MemoryOp,
@@ -67,6 +68,11 @@ export const aiData = new Store<AiState>({
 
 // Bumped whenever the host reports a new exchange, so an open window refetches.
 export const aiEvents = new Store<{ agent: string; n: number }>({ agent: '', n: 0 });
+
+// The AI backend's live runtime status (daemon up, resident models, host
+// memory/CPU). Polled by the Config tab; `status` is undefined until the first
+// reply (Store requires an object, so it's wrapped).
+export const aiStatus = new Store<{ status?: AiRuntimeStatus }>({});
 
 let conn: DataConnection | undefined;
 let peer: Peer | undefined;
@@ -284,6 +290,9 @@ function handleHostMsg(msg: HostMsg, wireBytes = 0): void {
         memoryLog: msg.memoryLog,
       });
       break;
+    case 'aiStatus':
+      aiStatus.set(() => ({ status: msg.status }));
+      break;
     case 'aiEvent':
       aiEvents.set((s) => ({ agent: msg.agent, n: s.n + 1 }));
       // Keep the loaded history live (sidebar chat + any open window) without
@@ -374,6 +383,10 @@ export function sendCommand(text: string): void {
 
 export function sendAiHistoryReq(agent: string): void {
   send({ m: 'aiHistoryReq', agent });
+}
+
+export function sendAiStatusReq(agent: string): void {
+  send({ m: 'aiStatusReq', agent });
 }
 
 export function sendAiClear(agent: string): void {

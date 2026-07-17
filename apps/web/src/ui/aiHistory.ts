@@ -12,6 +12,7 @@ import type {
   AiConfigView,
   AiExchange,
   AiPromptPart,
+  AiRuntimeStatus,
   AiStats,
   MemoryOp,
   MemoryRevision,
@@ -19,9 +20,11 @@ import type {
 import {
   aiData,
   aiEvents,
+  aiStatus,
   sendAiHistoryReq,
   sendAiMemoryEdit,
   sendAiModel,
+  sendAiStatusReq,
   sendAiVoice,
 } from '../net/client';
 import { closeLayer, openLayer } from './escStack';
@@ -43,6 +46,10 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   // periodic config refetch (aiEvents) so re-rendering doesn't slam open
   // sections shut mid-read.
   const openParts = new Set<string>();
+  // While the Config tab is open we poll the host for live backend status
+  // (daemon up, resident models, host memory/CPU) — it changes with no player
+  // action. Held so open/close/tab-switch can start & stop it.
+  let statusTimer: number | undefined;
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -198,13 +205,19 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       `</div>`;
     const voice = voiceCard(config);
     const settings = settingsCard(config);
+    // Live backend status, right under the picker it relates to. The body is
+    // filled now and repainted in place by the poll (paintStatus).
+    const runtime =
+      `<section class="ai-settings ai-runtime"><h3>Runtime</h3>` +
+      `<div class="ai-runtime-body" id="ai-status">${statusCard(aiStatus.get().status)}</div></section>`;
     const content =
       configMode === 'raw'
         ? `<pre class="ai-cfg-raw">${esc(config.raw)}</pre>`
         : `<div class="ai-cfg-parts">${config.parts.map((p) => partSection(p, cpt)).join('')}</div>`;
     // Request settings first — they're model-specific, and the model picker
-    // lives here. Voice below: the personas are common across models.
-    return toggle + settings + voice + content;
+    // lives here — then the live runtime card. Voice below: personas are common
+    // across models.
+    return toggle + settings + runtime + voice + content;
   }
 
   // One prompt section in View Pretty. Short sections stay as plain, always-
@@ -255,18 +268,25 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const thinkNote = s.think
       ? ''
       : `<span class="ai-note" title="Thinking is disabled for speed (this model reasons on every call otherwise, ~28× slower). If re-enabled, capture the response's thinking text to display the model's reasoning here.">!</span>`;
-    // The model row is a live picker when the daemon reported >1 installed
-    // model; otherwise it's static (nothing to switch to). Guarantee the active
-    // model is always an option even if it somehow isn't in the reported list.
+    // The model row is a picker when the daemon reported >1 installed model;
+    // otherwise it's static (nothing to switch to). Guarantee the active model
+    // is always an option even if it somehow isn't in the reported list. The
+    // dropdown only STAGES a choice — browsing it doesn't switch the model; the
+    // explicit "Switch" button does. So a player can peruse what's installed
+    // without kicking off a load, and gets clear feedback (the Runtime card)
+    // when the pick actually boots. The button starts on the active model
+    // (disabled) and enables the moment a different tag is staged.
     const tags = config.models.includes(s.model) ? config.models : [s.model, ...config.models];
     const modelRow =
       tags.length > 1
-        ? `<div class="ai-set"><span>model</span>` +
-          `<select class="ai-model-select" data-model title="Switch the model the AI runs on (must be installed on your Ollama). Colony-wide + persisted; the host warms it for the next command.">` +
+        ? `<div class="ai-set"><span>model</span><div class="ai-model-pick">` +
+          `<select class="ai-model-select" data-model-stage title="Preview an installed model. Browsing doesn't switch — press Switch to make it active.">` +
           tags
             .map((m) => `<option value="${esc(m)}"${m === s.model ? ' selected' : ''}>${esc(m)}</option>`)
             .join('') +
-          `</select></div>`
+          `</select>` +
+          `<button class="seg ai-model-switch" data-model-switch disabled title="Load the staged model and make it active colony-wide (persisted).">Active</button>` +
+          `</div></div>`
         : `<div class="ai-set"><span>model</span><code>${esc(s.model)}</code></div>`;
     const rows: string[] = [
       modelRow,
@@ -277,6 +297,93 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       rows.push(`<div class="ai-set"><span>${esc(k)}</span><code>${esc(String(v))}</code></div>`);
     }
     return `<section class="ai-settings"><h3>Request settings</h3><div class="ai-set-grid">${rows.join('')}</div></section>`;
+  }
+
+  // MB → a compact size, rolling up to GB past 1024 so a multi-gig model reads
+  // "5.6 GB", not "5734 MB".
+  const fmtMB = (mb: number): string => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`);
+  // Keep-alive countdown: minutes past a minute, else seconds.
+  const fmtDur = (sec: number): string => (sec >= 60 ? `${Math.round(sec / 60)}m` : `${sec}s`);
+  const usageClass = (pct: number): string => (pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : 'ok');
+
+  // The Runtime card body: whether the daemon's up, whether the ACTIVE model is
+  // actually resident (vs. still warming or evicted), the full `ollama ps` set
+  // (so a stray second resident model — the usual memory-pressure culprit — is
+  // visible), and the host's memory/CPU. Rendered into #ai-status and patched in
+  // place on each poll, so it stays live without rebuilding the model picker.
+  function statusCard(st: AiRuntimeStatus | undefined): string {
+    if (!st) return `<div class="ai-none">Checking backend…</div>`;
+    const dot = (cls: string, label: string, title = ''): string =>
+      `<span class="ai-dot ai-dot-${cls}"></span><span${title ? ` title="${esc(title)}"` : ''}>${esc(label)}</span>`;
+
+    const daemon = st.daemonUp
+      ? dot('up', 'Ollama running')
+      : dot('down', 'Ollama not reachable', 'Start it with `ollama serve`.');
+
+    let activeState: string;
+    if (!st.daemonUp) activeState = dot('down', 'offline');
+    else if (st.warming) activeState = dot('warm', 'loading…', 'Warming the model into memory.');
+    else if (st.activeLoaded) activeState = dot('up', 'resident', 'Loaded in memory — ready.');
+    else activeState = dot('idle', 'not loaded', 'Installed but not in memory; the next command loads it.');
+
+    const loaded = st.loaded.length
+      ? `<ul class="ai-loaded">${st.loaded
+          .map((m) => {
+            const mem =
+              m.vramMB != null
+                ? `${fmtMB(m.vramMB)} VRAM`
+                : m.sizeMB != null
+                  ? fmtMB(m.sizeMB)
+                  : '';
+            const exp = m.expiresInSec != null ? ` · ${fmtDur(m.expiresInSec)} left` : '';
+            const active = m.name === st.activeModel ? ' ai-loaded-active' : '';
+            return (
+              `<li class="ai-loaded-row${active}"><span class="ai-loaded-name">${esc(m.name)}</span>` +
+              `<span class="ai-loaded-meta">${esc(mem)}${esc(exp)}</span></li>`
+            );
+          })
+          .join('')}</ul>`
+      : `<div class="ai-none">no models resident</div>`;
+
+    const h = st.host;
+    const memPct = h.memTotalMB > 0 ? Math.round((h.memUsedMB / h.memTotalMB) * 100) : 0;
+    const resBar = (label: string, pct: number, val: string): string =>
+      `<div class="ai-res-row"><span class="ai-res-lbl">${label}</span>` +
+      `<div class="res-bar"><div class="res-fill res-${usageClass(pct)}" style="width:${Math.min(100, pct)}%"></div></div>` +
+      `<span class="ai-res-val">${esc(val)}</span></div>`;
+    const host =
+      `<div class="ai-res">` +
+      resBar('memory', memPct, `${fmtMB(h.memUsedMB)} / ${fmtMB(h.memTotalMB)} · ${memPct}%`) +
+      (h.cpuPct != null ? resBar('cpu', h.cpuPct, `${h.cpuPct}% · ${h.cores} cores`) : '') +
+      `</div>`;
+
+    return (
+      `<div class="ai-rt-top"><span class="ai-rt-line">${daemon}</span>` +
+      `<span class="ai-rt-line"><b class="ai-rt-model">${esc(st.activeModel)}</b> ${activeState}</span></div>` +
+      `<div class="ai-rt-sub">Resident models · ollama ps</div>${loaded}` +
+      `<div class="ai-rt-sub">Host</div>${host}`
+    );
+  }
+
+  // Repaint just the Runtime card body (not the whole Config view) so a 2s
+  // status poll never rebuilds the model picker under the player's cursor.
+  function paintStatus(): void {
+    if (!isOpen || tab !== 'config') return;
+    const el = body.querySelector<HTMLElement>('#ai-status');
+    if (el) el.innerHTML = statusCard(aiStatus.get().status);
+  }
+
+  // Start/stop the status poll to match "modal open AND on the Config tab".
+  // Fires an immediate request on start so the card fills without a 2s wait.
+  function syncStatusPoll(): void {
+    const shouldPoll = isOpen && tab === 'config';
+    if (shouldPoll && statusTimer === undefined) {
+      sendAiStatusReq(current);
+      statusTimer = window.setInterval(() => sendAiStatusReq(current), 2000);
+    } else if (!shouldPoll && statusTimer !== undefined) {
+      clearInterval(statusTimer);
+      statusTimer = undefined;
+    }
   }
 
   // One memory edit op as a short, escaped, human-readable line. Reused by the
@@ -392,12 +499,14 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     setActive('ai');
     sendAiHistoryReq(current); // pull fresh history + config
     render();
+    syncStatusPoll(); // start polling live backend status if on Config
   }
   function close(): void {
     isOpen = false;
     overlay.hidden = true;
     closeLayer('ai');
     setActive('map');
+    syncStatusPoll(); // stop the status poll
   }
   function toggle(): void {
     isOpen ? close() : open();
@@ -414,6 +523,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     if (!btn) return;
     tab = btn.dataset.tab as 'history' | 'config' | 'memory';
     render();
+    syncStatusPoll(); // poll only while the Config tab is showing
   });
   body.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
@@ -428,6 +538,22 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const voiceBtn = target.closest<HTMLElement>('[data-voice]');
     if (voiceBtn) {
       sendAiVoice(current, voiceBtn.dataset.voice!);
+      return;
+    }
+    // Commit the staged model. The host validates it, warms it (which flips the
+    // Runtime card to "loading…"), persists, and echoes an aiEvent → refetch →
+    // the picker resets to the new active. Poll once right away so the load
+    // state shows without waiting for the next 2s tick.
+    const switchBtn = target.closest<HTMLButtonElement>('[data-model-switch]');
+    if (switchBtn) {
+      const sel = switchBtn.parentElement?.querySelector<HTMLSelectElement>('.ai-model-select');
+      const active = aiData.get().config?.settings.model;
+      if (sel && sel.value !== active) {
+        sendAiModel(current, sel.value);
+        switchBtn.disabled = true;
+        switchBtn.textContent = 'Switching…';
+        sendAiStatusReq(current);
+      }
       return;
     }
     // Memory edits: each button sends one op. We blur first so the focus guard
@@ -471,12 +597,19 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       body.querySelector<HTMLElement>(`[data-mem-save="${t.dataset.memId}"]`)?.click();
     }
   });
-  // Switch the model: fire-and-forget, like voice. The host validates the tag
-  // against the daemon, warms it, persists, and echoes an aiEvent → refetch →
-  // the picker re-renders from the new state.
+  // Staging the model picker: browsing the dropdown does NOT switch — it only
+  // arms the Switch button. Enable it (and relabel) once the staged tag differs
+  // from the active one, so the player can peruse installed models freely.
   body.addEventListener('change', (e) => {
     const sel = (e.target as HTMLElement).closest<HTMLSelectElement>('.ai-model-select');
-    if (sel) sendAiModel(current, sel.value);
+    if (!sel) return;
+    const active = aiData.get().config?.settings.model;
+    const btn = sel.parentElement?.querySelector<HTMLButtonElement>('.ai-model-switch');
+    if (btn) {
+      const changed = sel.value !== active;
+      btn.disabled = !changed;
+      btn.textContent = changed ? `Switch to ${sel.value}` : 'Active';
+    }
   });
   // Remember which collapsible sections are expanded so a refetch re-render
   // keeps them open. `toggle` doesn't bubble, so listen in the capture phase.
@@ -494,11 +627,15 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   select.addEventListener('change', () => {
     current = select.value;
     sendAiHistoryReq(current);
+    syncStatusPoll(); // fetch status for the newly-selected agent immediately
   });
   // Re-render whenever data arrives; refetch when a live event hits our agent.
   aiData.subscribe(() => {
     if (isOpen) render();
   });
+  // Live backend status: patch just the Runtime card in place (no full re-render,
+  // so the model picker isn't rebuilt under the player's cursor mid-browse).
+  aiStatus.subscribe(paintStatus);
   aiEvents.subscribe((ev) => {
     if (isOpen && ev.agent === current) sendAiHistoryReq(current);
   });

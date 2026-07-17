@@ -425,6 +425,52 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 }
 .ai-model-select:hover { border-color: var(--accent); }
 .ai-model-select:focus { outline: none; border-color: var(--accent); }
+/* The staged model picker: dropdown + an explicit Switch button, so browsing
+   installed models doesn't switch — only the button does. */
+.ai-model-pick { display: flex; align-items: center; gap: 6px; justify-self: start; flex-wrap: wrap; }
+.ai-model-switch { font-size: 11px; padding: 2px 8px; }
+.ai-model-switch:disabled { opacity: 0.5; cursor: default; }
+.ai-model-switch:disabled:hover { background: #262a33; border-color: var(--border); }
+
+/* Runtime status card (Config tab): daemon/model state, `ollama ps`, host
+   memory/CPU. Polled live while the tab is open. */
+.ai-runtime-body { display: flex; flex-direction: column; gap: 8px; }
+.ai-rt-top { display: flex; flex-direction: column; gap: 5px; }
+.ai-rt-line { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg); }
+.ai-rt-model { font-variant-numeric: tabular-nums; }
+.ai-rt-sub {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin-top: 4px;
+}
+/* A small state dot: resident (green), loading (amber pulse), not-loaded
+   (grey), daemon-down (red). */
+.ai-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.ai-dot-up { background: #46c46a; }
+.ai-dot-down { background: #e5534b; }
+.ai-dot-idle { background: #6b7280; }
+.ai-dot-warm { background: var(--warn); animation: ai-pulse 1s ease-in-out infinite; }
+@keyframes ai-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* `ollama ps` list: one row per resident model, active one highlighted. */
+.ai-loaded { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.ai-loaded-row {
+  display: flex; justify-content: space-between; gap: 10px; font-size: 12px;
+  padding: 3px 8px; border-radius: 6px; background: #12141a; border: 1px solid var(--border);
+}
+.ai-loaded-active { border-color: var(--accent); }
+.ai-loaded-name { color: var(--fg); font-variant-numeric: tabular-nums; }
+.ai-loaded-meta { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Host memory/CPU: label · bar · value, colour-coded by usage. */
+.ai-res { display: flex; flex-direction: column; gap: 5px; }
+.ai-res-row { display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 8px; }
+.ai-res-lbl { font-size: 12px; color: var(--muted); }
+.ai-res-val { font-size: 11px; color: var(--fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.res-bar { height: 7px; border-radius: 4px; background: #12141a; border: 1px solid var(--border); overflow: hidden; }
+.res-fill { height: 100%; border-radius: 4px 0 0 4px; transition: width 0.3s ease; }
+.res-ok { background: #46c46a; }
+.res-warn { background: var(--warn); }
+.res-bad { background: #e5534b; }
 /* The "!" note beside a setting (e.g. thinking off): a small warning badge
    whose native title tooltip explains the caveat. */
 .ai-note {
