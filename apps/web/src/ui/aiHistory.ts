@@ -34,6 +34,7 @@ import {
 import { actionStatusMark } from './attribution';
 import { closeLayer, openLayer } from './escStack';
 import { setActive } from '../state/activeSurface';
+import { setUi } from '../state/uiState';
 
 function esc(s: string): string {
   return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
@@ -639,6 +640,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     overlay.hidden = false;
     openLayer('ai', close); // Esc closes the modal (top of the stack)
     setActive('ai');
+    setUi({ ai: true }); // survive reload
     sendAiHistoryReq(current); // pull fresh history + config
     render();
     syncStatusPoll(); // start polling live backend status if on Config
@@ -648,6 +650,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     overlay.hidden = true;
     closeLayer('ai');
     setActive('map');
+    setUi({ ai: false }); // survive reload
     syncStatusPoll(); // stop the status poll
   }
   function toggle(): void {

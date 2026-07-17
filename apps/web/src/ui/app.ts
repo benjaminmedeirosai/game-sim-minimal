@@ -20,6 +20,8 @@ import { setActive } from '../state/activeSurface';
 import { pointerTile } from '../state/pointer';
 import { settings } from '../state/settings';
 import { startClientPerf } from '../state/clientPerf';
+import { selection } from '../state/selection';
+import { uiState, setUi } from '../state/uiState';
 
 export function mountApp(root: HTMLElement): void {
   root.innerHTML = `
@@ -55,6 +57,11 @@ export function mountApp(root: HTMLElement): void {
       <div class="conn-gate" id="conn-gate"></div>
     </div>`;
 
+  // Snapshot the persisted UI state BEFORE we wire the live persist listeners
+  // below (those fire immediately on subscribe and would overwrite it). Restore
+  // reads from this snapshot; every later change flows back to localStorage.
+  const savedUi = uiState.get();
+
   const worldEl = root.querySelector<HTMLElement>('#world')!;
   const panels = new Map<string, HTMLElement>();
   root.querySelectorAll<HTMLElement>('.panel-float').forEach((p) => {
@@ -72,6 +79,7 @@ export function mountApp(root: HTMLElement): void {
     // Sync the Esc stack: at most one floating panel is open at a time, so it's
     // a single 'panel' layer that Esc closes before falling through to a unit.
     const open = [...panels].find(([, p]) => !p.hidden);
+    setUi({ panel: open ? open[0] : null }); // survive reload
     if (open) {
       openLayer('panel', () => {
         open[1].hidden = true;
@@ -107,8 +115,12 @@ export function mountApp(root: HTMLElement): void {
   // Left-sidebar layout is an opt-in alternative to the floating panels; toggle
   // adds/removes the class on .app. The floating cards/command bar are untouched.
   const app = root.querySelector<HTMLElement>('.app')!;
+  // Restore the sidebar layout before settings.subscribe (below) reads the class
+  // to decide whether to recompute the zoom cap.
+  if (savedUi.sidebar) app.classList.add('layout-sidebar');
   root.querySelector<HTMLButtonElement>('[data-layout]')!.addEventListener('click', () => {
-    app.classList.toggle('layout-sidebar');
+    const on = app.classList.toggle('layout-sidebar');
+    setUi({ sidebar: on }); // survive reload
     refreshViewportInfo(); // world width changed; recompute zoom cap
   });
 
@@ -131,6 +143,24 @@ export function mountApp(root: HTMLElement): void {
   // The AI History window is a full-screen modal, not a side panel.
   const aiWindow = mountAiHistory(root);
   root.querySelector<HTMLButtonElement>('[data-ai]')!.addEventListener('click', () => aiWindow.toggle());
+
+  // --- Restore UI state across reloads -----------------------------------
+  // Reopen the floating panel the player left open (skip 'new' — it's disabled).
+  if (savedUi.panel && savedUi.panel !== 'new' && panels.has(savedUi.panel)) {
+    togglePanel(savedUi.panel);
+  }
+  // Mirror unit selection to storage so it too survives a reload.
+  selection.subscribe(() => setUi({ unitId: selection.get().unitId ?? null }));
+  // The AI window and unit selection only mean something in-world, so restore
+  // them the first time a world is present (on reload that's when the host's
+  // snapshot lands; if a world is already up, this fires immediately). One-shot.
+  let restoredInWorld = false;
+  game.subscribe(() => {
+    if (restoredInWorld || !game.get().world) return;
+    restoredInWorld = true;
+    if (savedUi.unitId) selection.set({ unitId: savedUi.unitId });
+    if (savedUi.ai) aiWindow.toggle();
+  });
 
   // Topbar live bits: peer count + tick.
   const peerCount = root.querySelector<HTMLElement>('#peer-count')!;
