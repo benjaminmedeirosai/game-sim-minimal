@@ -10,7 +10,7 @@
 // we try to spawn `ollama serve` ONCE, then fall back to a clear warning.
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { AiSettings } from '@game/shared';
+import type { AiLoadedModel, AiSettings } from '@game/shared';
 import type { ChatMessage, ChatResult } from './types.js';
 
 // One-line config knobs. GSM_AI_MODEL sets the model tag used until a player
@@ -71,6 +71,16 @@ interface OllamaChatResponse {
   eval_duration?: number;
 }
 
+/** One row of the daemon's `/api/ps` (resident models). Sizes are bytes;
+ *  `expires_at` is an ISO timestamp for the keep-alive unload. */
+interface OllamaPsModel {
+  name?: string;
+  model?: string;
+  size?: number;
+  size_vram?: number;
+  expires_at?: string;
+}
+
 const nsToMs = (ns?: number): number | undefined =>
   ns == null ? undefined : Math.round(ns / 1e6);
 
@@ -80,6 +90,10 @@ class OllamaClient {
   /** The serial tail: each chat() awaits the previous one. */
   private queue: Promise<unknown> = Promise.resolve();
   private didSpawn = false;
+  /** True while a warm-up request is in flight (a fresh switch or boot). The
+   *  Config tab's status card reads this to show "loading…" before the model is
+   *  resident. */
+  private warming = false;
   /** The model tag every call currently runs against. Starts at DEFAULT_MODEL;
    *  init() may swap in a persisted pick, and setModel() changes it live. */
   private currentModel = DEFAULT_MODEL;
@@ -89,6 +103,11 @@ class OllamaClient {
 
   get isAvailable(): boolean {
     return this.available;
+  }
+
+  /** A warm-up is in flight (model switching / booting into memory). */
+  get isWarming(): boolean {
+    return this.warming;
   }
 
   /** The model tag in effect right now. */
@@ -135,6 +154,33 @@ class OllamaClient {
     this.currentModel = name;
     void this.warm();
     return true;
+  }
+
+  /** Live snapshot of the daemon's resident models (`ollama ps`) plus a fresh
+   *  reachability check — the status card polls this while the Config tab is
+   *  open. Unlike `isAvailable` (set once at init), `daemonUp` here reflects
+   *  right now: if the daemon died after boot, this reports it. Never throws. */
+  async runtime(): Promise<{ daemonUp: boolean; loaded: AiLoadedModel[] }> {
+    try {
+      const res = await fetch(`${OLLAMA_URL}/api/ps`, { method: 'GET' });
+      if (!res.ok) return { daemonUp: false, loaded: [] };
+      const data = (await res.json()) as { models?: OllamaPsModel[] };
+      const now = Date.now();
+      const loaded = (data.models ?? []).map((m) => {
+        const expMs = m.expires_at ? Date.parse(m.expires_at) : NaN;
+        return {
+          name: m.name ?? m.model ?? '?',
+          sizeMB: m.size != null ? Math.round(m.size / 1e6) : undefined,
+          vramMB: m.size_vram != null ? Math.round(m.size_vram / 1e6) : undefined,
+          expiresInSec: Number.isFinite(expMs)
+            ? Math.max(0, Math.round((expMs - now) / 1000))
+            : undefined,
+        };
+      });
+      return { daemonUp: true, loaded };
+    } catch {
+      return { daemonUp: false, loaded: [] };
+    }
   }
 
   private async ping(): Promise<boolean> {
@@ -186,11 +232,14 @@ class OllamaClient {
   /** Load the model into memory with a throwaway request so the first real
    *  command is fast. Failures are non-fatal (logged, not thrown). */
   private async warm(): Promise<void> {
+    this.warming = true;
     try {
       await this.rawChat([{ role: 'user', content: 'ok' }], { temperature: 0 });
       console.log('[ai] model warmed');
     } catch (err) {
       console.warn(`[ai] warm-up failed: ${(err as Error).message}`);
+    } finally {
+      this.warming = false;
     }
   }
 

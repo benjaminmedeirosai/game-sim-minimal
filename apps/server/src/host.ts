@@ -3,6 +3,11 @@
 // about connections — index.ts hands it a `broadcast` function and forwards
 // client messages to its methods.
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import {
   BASE_TPS,
   STATS_INTERVAL_MS,
@@ -19,6 +24,7 @@ import type {
   ActionSource,
   AiExchange,
   AiPending,
+  HostResources,
   HostMsg,
   MemoryOp,
   MemoryRevision,
@@ -36,6 +42,49 @@ import {
 import { applyMemoryOps, memoryChanged } from './ai/orchestrator/memory.js';
 import { DEFAULT_VOICE, isVoiceId } from './ai/orchestrator/voice.js';
 import { loadSave, savePath, writeSave } from './persist.js';
+
+/** Bytes of genuinely-available RAM. On macOS `os.freemem()` counts only
+ *  truly-idle pages (it excludes reclaimable file cache), so it reads ~99% used
+ *  forever — useless as a pressure gauge. There we parse `vm_stat` and treat
+ *  free + inactive + speculative + purgeable as available (what the OS can hand
+ *  back before it starts swapping), matching Activity Monitor's sense of
+ *  pressure. Everything else (and any parse failure) falls back to freemem(). */
+async function availableMemBytes(): Promise<number> {
+  if (os.platform() !== 'darwin') return os.freemem();
+  try {
+    const { stdout } = await execFileAsync('vm_stat', [], { timeout: 1500 });
+    const pageSize = Number(/page size of (\d+) bytes/.exec(stdout)?.[1]) || 4096;
+    const pages = (label: string): number =>
+      Number(new RegExp(`${label}:\\s+(\\d+)\\.`).exec(stdout)?.[1] ?? 0);
+    const reclaimable =
+      pages('Pages free') +
+      pages('Pages inactive') +
+      pages('Pages speculative') +
+      pages('Pages purgeable');
+    return reclaimable > 0 ? reclaimable * pageSize : os.freemem();
+  } catch {
+    return os.freemem();
+  }
+}
+
+/** Sample the host machine's memory + CPU for the AI status card. The model runs
+ *  here, so this is where its memory footprint shows up. Memory uses a real
+ *  availability read (see availableMemBytes) so the gauge tracks actual
+ *  pressure, not macOS's misleading free-page count. CPU is the 1-min load
+ *  average as a percent of cores. */
+async function hostResources(): Promise<HostResources> {
+  const total = os.totalmem();
+  const avail = await availableMemBytes();
+  const cores = os.cpus().length;
+  const load1 = os.loadavg()[0];
+  return {
+    memTotalMB: Math.round(total / 1e6),
+    memUsedMB: Math.round((total - avail) / 1e6),
+    memFreePct: total > 0 ? Math.round((avail / total) * 100) : 0,
+    cpuPct: cores > 0 ? Math.round((load1 / cores) * 100) : undefined,
+    cores,
+  };
+}
 
 // How many recent conversation turns to feed back to the model as short-term
 // memory (a player referring to "that" or "the one I mentioned"). A "turn" is a
@@ -419,6 +468,26 @@ export class Host {
       pending: this.aiPending.get(agent) ?? [],
       memory: this.aiMemory,
       memoryLog: this.aiMemoryLog,
+    };
+  }
+
+  /** Build the live AI runtime status: a fresh `ollama ps` (resident models +
+   *  daemon reachability), whether the active model is among them or still
+   *  warming, and the host's memory/CPU. Async — it probes the daemon live. */
+  async aiStatusMsg(agent: string): Promise<HostMsg> {
+    const [{ daemonUp, loaded }, host] = await Promise.all([ollama.runtime(), hostResources()]);
+    const active = ollama.model;
+    return {
+      m: 'aiStatus',
+      agent,
+      status: {
+        daemonUp,
+        activeModel: active,
+        activeLoaded: loaded.some((l) => l.name === active),
+        warming: ollama.isWarming,
+        loaded,
+        host,
+      },
     };
   }
 

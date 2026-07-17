@@ -234,6 +234,8 @@ peer.on('connection', (conn) => {
       void host.runCommand(msg.text, playerSource(conn.peer), players);
     } else if (msg.m === 'aiHistoryReq') {
       safeSend(conn, host.aiHistoryMsg(msg.agent, roster.list().map((p) => p.name)));
+    } else if (msg.m === 'aiStatusReq') {
+      void host.aiStatusMsg(msg.agent).then((m) => safeSend(conn, m));
     } else if (msg.m === 'aiClear') {
       host.clearAi(msg.agent);
     } else if (msg.m === 'aiVoice') {
