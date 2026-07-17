@@ -19,6 +19,7 @@ import {
   encumbrance,
   isBuildable,
   tileAt,
+  toCell,
   unitCapacity,
   unitLoad,
 } from '@game/shared';
@@ -427,7 +428,7 @@ function updateInfo(info: HTMLElement): void {
   infoSig = sig;
 
   info.innerHTML =
-    `<div class="sel-head"><b>${u.id}</b> <span class="muted">(${u.pos.x}, ${u.pos.y})</span>` +
+    `<div class="sel-head"><b>${u.id}</b> <span class="muted">${toCell(u.pos)}</span>` +
     ` <span class="sel-doing">${doing}</span></div>` +
     `<div class="sel-stats">${statsHtml}</div>` +
     `<div class="sel-row"><span class="sel-label">Tools</span>${toolsHtml}</div>` +

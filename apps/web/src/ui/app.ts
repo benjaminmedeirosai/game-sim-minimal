@@ -1,3 +1,4 @@
+import { toCellXY } from '@game/shared';
 import { net } from '../net/client';
 import { camera, game } from '../state/game';
 import { refreshViewportInfo } from '../render/viewport';
@@ -38,8 +39,8 @@ export function mountApp(root: HTMLElement): void {
         <div class="controls">
           <div id="speed" class="speed"></div>
           <div id="zoomctl"></div>
-          <span class="coord-badge" id="coord-badge" title="Camera center tile (x, y)"></span>
-          <span class="coord-badge coord-mouse" id="mouse-badge" title="Tile under the cursor (x, y)"></span>
+          <span class="coord-badge" id="coord-badge" title="Camera center cell (column-row, e.g. AF29)"></span>
+          <span class="coord-badge coord-mouse" id="mouse-badge" title="Cell under the cursor (column-row, e.g. AF29)"></span>
         </div>
       </header>
       <div class="stage">
@@ -140,9 +141,7 @@ export function mountApp(root: HTMLElement): void {
   const coordBadge = root.querySelector<HTMLElement>('#coord-badge')!;
   const syncCoord = (): void => {
     const c = camera.get();
-    coordBadge.textContent = game.get().world
-      ? `◎ ${Math.floor(c.cx)}, ${Math.floor(c.cy)}`
-      : '';
+    coordBadge.textContent = game.get().world ? `◎ ${toCellXY(c.cx, c.cy)}` : '';
   };
   camera.subscribe(syncCoord);
   game.subscribe(syncCoord);
@@ -150,7 +149,7 @@ export function mountApp(root: HTMLElement): void {
   // Live tile under the mouse cursor (blank when off the map).
   const mouseBadge = root.querySelector<HTMLElement>('#mouse-badge')!;
   pointerTile.subscribe((p) => {
-    mouseBadge.textContent = p.tile ? `↖ ${p.tile.x}, ${p.tile.y}` : '';
+    mouseBadge.textContent = p.tile ? `↖ ${toCellXY(p.tile.x, p.tile.y)}` : '';
   });
 
   // No auto-connect: the connection gate shows the join form (name + world +
