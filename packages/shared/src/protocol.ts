@@ -20,9 +20,29 @@ export interface PeerInfo {
   isHost: boolean;
 }
 
+/** A saved camera position, world-scoped and timestamped. Persisted on BOTH
+ *  sides — the client keeps its own in localStorage, the host keeps one per
+ *  account — so on load the newer `ts` wins (panning on one device propagates to
+ *  another via the host). `worldId` guards against restoring a camera into a
+ *  different world; `tilesAcross` is the zoom. All coords are world tiles. */
+export interface CameraState {
+  worldId: string;
+  cx: number;
+  cy: number;
+  tilesAcross: number;
+  /** Epoch ms the camera was last moved (client or host clock). */
+  ts: number;
+}
+
 /** Messages a connecting peer sends TO the host. */
 export type ClientMsg =
-  | { m: 'hello'; name: string; role: Role; serviceType?: string }
+  // Join handshake. `deviceToken` is a random per-browser secret (localStorage)
+  // that IS the player's identity — no password. `allowOthers` toggles the
+  // account's device-enrollment window: when true, a connection using this name
+  // from a NOT-yet-enrolled device is accepted and its token remembered; when
+  // false, only already-enrolled devices may connect (but all of them still can).
+  // Both are absent for a 'service' peer, which bypasses account auth.
+  | { m: 'hello'; name: string; role: Role; serviceType?: string; deviceToken?: string; allowOthers?: boolean }
   | { m: 'newWorld'; settings: WorldSettings }
   | { m: 'setSpeed'; multiplier: number }
   | { m: 'action'; action: Action }
@@ -54,7 +74,14 @@ export type ClientMsg =
 
 /** Messages the host sends TO peers. */
 export type HostMsg =
-  | { m: 'welcome'; you: PeerInfo; roster: PeerInfo[] }
+  // Accepted the join. `lastCamera` is the account's saved camera (or absent for
+  // a brand-new account); the client compares its timestamp with its own local
+  // one and restores whichever is newer.
+  | { m: 'welcome'; you: PeerInfo; roster: PeerInfo[]; lastCamera?: CameraState }
+  // Refused the join (name taken by another device, invalid name, or the session
+  // was superseded by a newer login). Carries a human-readable reason for the
+  // join screen; the peer is not added to the roster.
+  | { m: 'rejected'; reason: string }
   | { m: 'roster'; roster: PeerInfo[] }
   // `actionLog` is a capped tail of recent attributed actions for the Actions
   // panel; it rides with the world so the panel stays in sync with the sim.

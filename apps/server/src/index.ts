@@ -15,9 +15,14 @@ import type { DataConnection } from 'peerjs';
 // export AS the Peer class.
 const Peer = (peerModule as unknown as { Peer: typeof peerModule }).Peer;
 import { ROOM_ID } from '@game/shared';
-import type { ActionSource, ClientMsg, HostMsg, PeerInfo } from '@game/shared';
+import type { ActionSource, CameraState, ClientMsg, HostMsg, PeerInfo } from '@game/shared';
 import { Roster } from './roster.js';
 import { Host } from './host.js';
+import { Accounts } from './accounts.js';
+
+// The player identity registry (device-token accounts). Separate from the world
+// save so it survives New World and never rides in a snapshot.
+const accounts = new Accounts();
 
 const HOST_ID = ROOM_ID; // the host's peer id IS the room id
 const roster = new Roster();
@@ -77,12 +82,51 @@ function sendTo(peerId: string, msg: HostMsg): void {
   if (conn) safeSend(conn, msg);
 }
 
+/** Add an admitted peer to the roster + conns, greet it, and refresh everyone.
+ *  `lastCamera` is the account's saved camera (players only) so the client can
+ *  restore the newer of its local vs. host camera. */
+function seat(conn: DataConnection, info: PeerInfo, lastCamera?: CameraState): void {
+  roster.add(info);
+  conns.set(conn.peer, conn);
+  console.log(`[server] "${info.name}" joined as ${info.role} (${conns.size} peer(s))`);
+  safeSend(conn, { m: 'welcome', you: info, roster: roster.list(), lastCamera });
+  safeSend(conn, host.snapshotMsg()); // give the newcomer the current world
+  broadcast({ m: 'roster', roster: roster.list() });
+}
+
+/** Handle a `hello`: players go through account auth (device-token identity,
+ *  single live session); a service peer joins directly with no account. */
+function admit(conn: DataConnection, msg: Extract<ClientMsg, { m: 'hello' }>): void {
+  if (msg.role !== 'player') {
+    seat(conn, { id: conn.peer, name: msg.name, role: msg.role, serviceType: msg.serviceType, isHost: false });
+    return;
+  }
+  const res = accounts.authenticate(msg.name, msg.deviceToken, !!msg.allowOthers, conn.peer);
+  if (!res.ok) {
+    safeSend(conn, { m: 'rejected', reason: res.reason });
+    return; // not seated — never added to the roster/conns
+  }
+  // A newer login supersedes any live session for this account: tell the old
+  // peer why, then drop it (accounts already points the slot at the new peer).
+  if (res.takeover) {
+    const old = conns.get(res.takeover);
+    if (old) safeSend(old, { m: 'rejected', reason: 'Your session was opened on another device.' });
+    dropPeer(res.takeover, 'superseded');
+  }
+  seat(
+    conn,
+    { id: conn.peer, name: res.account.displayName, role: 'player', isHost: false },
+    accounts.cameraFor(res.nameKey),
+  );
+}
+
 /** Remove a peer (idempotent) and tell everyone still connected. */
 function dropPeer(id: string, reason: string): void {
   if (!roster.has(id) && !conns.has(id)) return;
   roster.remove(id);
   conns.delete(id);
   host.forgetPlayer(id); // stop reporting a gone player's camera to the model
+  accounts.release(id); // free the account's single live-session slot
   console.log(`[server] peer left: ${id} (${reason})`);
   broadcast({ m: 'roster', roster: roster.list() });
 }
@@ -101,10 +145,17 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   console.log(`[server] ${signal} received — saving session before exit`);
   host.save();
+  accounts.flush();
   process.exit(0);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// Flush the accounts registry periodically if it changed (new accounts, enrolled
+// devices, camera moves). The world save has its own loop inside the host; this
+// is the sidecar's equivalent.
+const ACCOUNTS_FLUSH_MS = 5000;
+setInterval(() => accounts.flush(), ACCOUNTS_FLUSH_MS);
 
 // Local status/health endpoint. NOT the game transport (that's WebRTC) — it
 // exists so the process binds a port the Servers UI can watch for readiness,
@@ -158,19 +209,7 @@ peer.on('connection', (conn) => {
   conn.on('data', (raw) => {
     const msg = raw as ClientMsg;
     if (msg.m === 'hello') {
-      const info: PeerInfo = {
-        id: conn.peer,
-        name: msg.name,
-        role: msg.role,
-        serviceType: msg.serviceType,
-        isHost: false,
-      };
-      roster.add(info);
-      conns.set(conn.peer, conn);
-      console.log(`[server] "${info.name}" joined as ${info.role} (${conns.size} peer(s))`);
-      safeSend(conn, { m: 'welcome', you: info, roster: roster.list() });
-      safeSend(conn, host.snapshotMsg()); // give the newcomer the current world
-      broadcast({ m: 'roster', roster: roster.list() });
+      admit(conn, msg);
     } else if (msg.m === 'newWorld') {
       console.log(`[server] "${roster.list().find((p) => p.id === conn.peer)?.name ?? conn.peer}" requested a new world`);
       host.newWorld(msg.settings);
@@ -195,6 +234,15 @@ peer.on('connection', (conn) => {
     } else if (msg.m === 'camera') {
       const name = roster.list().find((p) => p.id === conn.peer)?.name ?? conn.peer;
       host.setPlayerCamera(conn.peer, name, msg);
+      // Also persist it to the account for cross-device restore. The reported
+      // width in tiles IS the zoom (tilesAcross); stamp it so newer wins on load.
+      accounts.updateCamera(conn.peer, {
+        worldId: host.world.id,
+        cx: msg.cx,
+        cy: msg.cy,
+        tilesAcross: msg.w,
+        ts: Date.now(),
+      });
     } else if (msg.m === 'ping') {
       safeSend(conn, { m: 'pong', t: msg.t }); // echo for RTT measurement
     }
