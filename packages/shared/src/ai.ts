@@ -83,6 +83,19 @@ export interface AiPending {
 export interface AiPromptPart {
   label: string;
   content: string;
+  /** How often this section's content changes call-to-call, which decides
+   *  whether Ollama's prefix KV-cache can reuse it. Sections are emitted
+   *  least-changing-first (see assemble), so the cache holds through the leading
+   *  run of unchanged sections and re-evaluates from the first change onward:
+   *   - 'stable'     — byte-identical every call (role, action schema, registry,
+   *                    voice): the reliably-cached prefix.
+   *   - 'occasional' — changes only on a discrete event (memory edit, roster
+   *                    change): usually cached.
+   *   - 'live'       — changes most turns (world snapshot, views, conversation,
+   *                    the command itself): re-evaluated.
+   *  Drives the per-section KV badge + the expected-cache target in the Config
+   *  tab's View Pretty. Optional so older payloads/tests still render. */
+  volatility?: 'stable' | 'occasional' | 'live';
 }
 
 /** Per-call model telemetry, lifted from the daemon's response. All optional:

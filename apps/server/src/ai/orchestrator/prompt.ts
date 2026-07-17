@@ -551,18 +551,23 @@ export function assemble(
   const convo = historyContext(history);
   const cmd = commandContext(command ?? '<the player command goes here>', submitter);
 
+  // Each part is tagged with how reliably it changes call-to-call — the same
+  // property the ordering above is built on — so the Config UI can show a KV
+  // badge per section and predict the cache boundary. 'stable' = never/rarely
+  // changes (the cached prefix); 'occasional' = a discrete event (memory/roster);
+  // 'live' = changes most turns.
   const parts: AiPromptPart[] = [
-    { label: 'System', content: role },
-    { label: 'Actions', content: actions },
-    { label: 'World reference', content: worldRef },
-    { label: 'Recipes', content: recipes },
-    ...(voiceText ? [{ label: 'Voice', content: voiceText }] : []),
-    { label: 'Memory', content: mem },
-    { label: 'Players', content: players },
-    { label: 'World context', content: ctx },
-    { label: 'Player views', content: views },
-    { label: 'Recent conversation', content: convo },
-    { label: 'Command', content: cmd },
+    { label: 'System', content: role, volatility: 'stable' },
+    { label: 'Actions', content: actions, volatility: 'stable' },
+    { label: 'World reference', content: worldRef, volatility: 'stable' },
+    { label: 'Recipes', content: recipes, volatility: 'stable' },
+    ...(voiceText ? [{ label: 'Voice', content: voiceText, volatility: 'stable' as const }] : []),
+    { label: 'Memory', content: mem, volatility: 'occasional' },
+    { label: 'Players', content: players, volatility: 'occasional' },
+    { label: 'World context', content: ctx, volatility: 'live' },
+    { label: 'Player views', content: views, volatility: 'live' },
+    { label: 'Recent conversation', content: convo, volatility: 'live' },
+    { label: 'Command', content: cmd, volatility: 'live' },
   ];
 
   const userContent = [

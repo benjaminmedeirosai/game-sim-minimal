@@ -382,6 +382,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .ai-chip-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 .ai-chip-ok { color: #4ade80; border-color: color-mix(in srgb, #4ade80 45%, var(--border)); }
 .ai-chip-bad { color: #f87171; border-color: color-mix(in srgb, #f87171 50%, var(--border)); }
+/* The predicted cache target that the measured "~X% cached" chip is checked
+ * against — a quiet dashed outline so it reads as a reference, not a metric. */
+.ai-chip-exp {
+  color: var(--muted); border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
 .ai-none { font-size: 12px; color: var(--muted); font-style: italic; }
 .ai-err { font-size: 12px; color: var(--warn); margin-top: 4px; }
 .ai-raw summary { cursor: pointer; font-size: 11px; color: var(--accent); }
@@ -511,6 +517,18 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   margin-left: auto; font-size: 10px; letter-spacing: 0; text-transform: none;
   color: var(--muted); font-variant-numeric: tabular-nums;
 }
+/* Per-section KV-cache badge: whether this section is part of the reliably-
+   cached prefix (✓), usually cached (~), or re-evaluated most turns (✗). The
+   auto margin groups it with the size on the right (the following size keeps its
+   own auto margin, so it sits snug after with just the flex gap between). */
+.ai-kv {
+  margin-left: auto; font-size: 9px; letter-spacing: 0; text-transform: none;
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.ai-kv-stable { color: #4ade80; border-color: color-mix(in srgb, #4ade80 45%, var(--border)); }
+.ai-kv-occasional { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.ai-kv-live { color: var(--muted); border-color: var(--border); }
 .ai-part pre, .ai-cfg-raw {
   margin: 0; padding: 12px; background: #0a0c11; border: 1px solid var(--border);
   border-radius: 8px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;

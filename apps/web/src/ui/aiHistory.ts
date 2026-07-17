@@ -94,9 +94,42 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     return Number.isFinite(min) ? min : 0;
   }
 
+  // What fraction of THIS prompt we EXPECT served from KV cache, derived purely
+  // from what changed since the previous prompt for the SAME agent. The prompt's
+  // sections are laid out least-changing-first (see assemble), so the cache holds
+  // through every leading section that is byte-identical and breaks at the first
+  // one that differs. That gives a precise target to check the measured hit
+  // against: the point isn't the absolute number (~60% is normal and fine) — it's
+  // whether reality matches what the diff says SHOULD be reusable. Returns the
+  // expected hit % and the section where the prefix breaks (the first change), or
+  // null with no prior prompt to diff. Char-length is a faithful proxy for the
+  // token prefix and needs no tokenizer.
+  function expectedCache(cur: AiExchange, prev: AiExchange | undefined): { pct: number; boundary: string } | null {
+    if (!prev) return null;
+    const parts = cur.input.parts;
+    const prior = prev.input.parts;
+    const total = parts.reduce((sum, p) => sum + p.content.length, 0) || 1;
+    let cached = 0;
+    let boundary = '(unchanged)'; // nothing differed — the whole prompt is reusable
+    for (let i = 0; i < parts.length; i++) {
+      const pp = prior[i];
+      if (pp && pp.label === parts[i].label && pp.content === parts[i].content) {
+        cached += parts[i].content.length;
+      } else {
+        boundary = parts[i].label;
+        break;
+      }
+    }
+    return { pct: Math.round((cached / total) * 100), boundary };
+  }
+
   // A compact telemetry strip: tokens in/out with per-phase throughput, a KV
   // cache-hit estimate, and where the time went. Only reported fields are shown.
-  function statsRow(s: AiStats | undefined): string {
+  // `expected` (when we have a prior prompt to diff) drives the cache chip's
+  // color: it's flagged red only when the MEASURED hit falls well below what the
+  // content diff predicts — i.e. the prefix was evicted for a reason other than
+  // normal content churn (model swap, keep-alive expiry, host restart).
+  function statsRow(s: AiStats | undefined, expected: { pct: number; boundary: string } | null): string {
     if (!s) return '';
     const chips: string[] = [];
     const inRate = s.promptTokens && s.promptMs ? Math.round((s.promptTokens / s.promptMs) * 1000) : undefined;
@@ -105,15 +138,35 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       chips.push(`<span class="ai-chip"><b>${s.promptTokens ?? '?'}</b> in / <b>${s.outputTokens ?? '?'}</b> out tok</span>`);
     }
     // Cache-hit estimate: fraction of the prompt NOT re-evaluated this call.
-    // reeval ≈ promptMs × coldRate; hit% = 1 − reeval/total. A green/amber/red
-    // class flags healthy reuse vs. an evicted/busted prefix at a glance.
+    // reeval ≈ promptMs × coldRate; hit% = 1 − reeval/total. When we have an
+    // expected target, color by the gap to it (a noisy estimate, so a generous
+    // tolerance); otherwise fall back to absolute thresholds.
     if (s.promptTokens && s.promptMs != null) {
       const cold = coldPromptRate();
       if (cold > 0) {
         const reeval = Math.min(s.promptTokens, (s.promptMs / 1000) * cold);
         const hit = Math.max(0, Math.min(100, Math.round((1 - reeval / s.promptTokens) * 100)));
-        const cls = hit >= 80 ? 'ai-chip-ok' : hit >= 40 ? 'ai-chip-warn' : 'ai-chip-bad';
-        chips.push(`<span class="ai-chip ${cls}" title="Estimated share of the prompt served from KV cache (not re-evaluated). Low = the cached prefix was busted/evicted.">~${hit}% cached</span>`);
+        // Measured share is throughput-derived and noisy; only a clear shortfall
+        // vs. expectation signals a real cache-eviction problem.
+        const TOL = 15;
+        const cls = expected
+          ? hit >= expected.pct - TOL
+            ? 'ai-chip-ok'
+            : 'ai-chip-bad'
+          : hit >= 80
+            ? 'ai-chip-ok'
+            : hit >= 40
+              ? 'ai-chip-warn'
+              : 'ai-chip-bad';
+        const title = expected
+          ? `Estimated KV-cache share this call (~${hit}%) vs expected ~${expected.pct}% — the prompt is byte-identical to the previous one up to “${esc(expected.boundary)}”, where the first change begins. Far below expected ⇒ the cached prefix was evicted/reset (model swap, keep-alive expiry, host restart), not just normal content changes.`
+          : 'Estimated share of the prompt served from KV cache (not re-evaluated). Low = the cached prefix was busted/evicted.';
+        chips.push(`<span class="ai-chip ${cls}" title="${title}">~${hit}% cached</span>`);
+        if (expected) {
+          chips.push(
+            `<span class="ai-chip ai-chip-exp" title="Expected KV-cache share: everything up to “${esc(expected.boundary)}” is byte-identical to the previous prompt, so the cache should hold through it and re-evaluate from there. This is the target the measured share should match.">exp ~${expected.pct}% @ ${esc(expected.boundary)}</span>`,
+          );
+        }
       }
     }
     if (inRate != null) chips.push(`<span class="ai-chip" title="Prompt-eval throughput. High (thousands) = cache hit; hundreds = cold re-eval.">prompt ${s.promptMs}ms · ${inRate.toLocaleString()} tok/s in</span>`);
@@ -124,7 +177,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     return chips.length ? `<div class="ai-stats">${chips.join('')}</div>` : '';
   }
 
-  function exchangeCard(x: AiExchange): string {
+  function exchangeCard(x: AiExchange, prev: AiExchange | undefined): string {
     const acts = x.output.actions.length
       ? `<ul class="ai-acts">${x.output.actions.map((a) => `<li>${esc(describeAction(a))}</li>`).join('')}</ul>`
       : `<div class="ai-none">no actions</div>`;
@@ -159,7 +212,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       `<div class="ai-xchg">` +
       `<div class="ai-xhead"><span class="ai-cmd">${esc(x.input.command)}</span>` +
       `<span class="ai-xmeta">${who} · t${x.tick} · ${x.ms}ms</span></div>` +
-      statsRow(x.output.stats) +
+      statsRow(x.output.stats, expectedCache(x, prev)) +
       said +
       mem +
       views +
@@ -175,7 +228,16 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     if (exchanges.length === 0) {
       return `<div class="ai-placeholder">No exchanges yet. Use the command bar to send the AI an instruction.</div>`;
     }
-    return `<div class="ai-list">${[...exchanges].reverse().map(exchangeCard).join('')}</div>`;
+    // exchanges are oldest→newest; each card's cache baseline is the previous
+    // exchange for the same agent (the list is already agent-scoped, but match
+    // explicitly so a mixed list can't diff across agents). Build cards in order,
+    // then reverse for newest-first display.
+    const findPrev = (i: number): AiExchange | undefined => {
+      for (let j = i - 1; j >= 0; j--) if (exchanges[j].agent === exchanges[i].agent) return exchanges[j];
+      return undefined;
+    };
+    const cards = exchanges.map((x, i) => exchangeCard(x, findPrev(i)));
+    return `<div class="ai-list">${cards.reverse().join('')}</div>`;
   }
 
   // chars→tokens: calibrate against the most recent real exchange (its verbatim
@@ -196,11 +258,16 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   function renderConfig(config: AiConfigView | undefined): string {
     if (!config) return `<div class="ai-placeholder">Loading config…</div>`;
     const cpt = charsPerToken();
+    const target = templateCacheTarget(config.parts);
+    const targetChip = target
+      ? `<span class="ai-chip ai-chip-exp" title="Expected KV-cache share in the steady state: everything before “${esc(target.boundary)}” (the stable + occasional sections) stays byte-identical between calls, so the cache should hold through it and re-evaluate from “${esc(target.boundary)}” onward. Compare against the measured “~X% cached” on the History tab.">expect ~${target.pct}% cached</span>`
+      : '';
     const toggle =
       `<div class="ai-cfg-toggle">` +
       `<button class="seg ${configMode === 'pretty' ? 'active' : ''}" data-cfg="pretty">View Pretty</button>` +
       `<button class="seg ${configMode === 'raw' ? 'active' : ''}" data-cfg="raw">View Raw</button>` +
       `<span class="ai-cfg-size" title="Total prompt size. Token estimate calibrated to the model's own tokenizer from recent exchanges.">${sizeLabel(config.raw.length, cpt)}</span>` +
+      targetChip +
       `<span class="ai-model">model: ${esc(config.model)}</span>` +
       `</div>`;
     const voice = voiceCard(config);
@@ -220,21 +287,65 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     return toggle + settings + runtime + voice + content;
   }
 
+  // The KV-cache badge for a section, from its volatility tier. It tells the
+  // reader, at a glance, whether this section is part of the reliably-cached
+  // prefix (✓), usually cached (~), or re-evaluated most turns (✗) — the same
+  // tiers the expected-cache target is built from. Empty when a section has no
+  // tier (older payloads).
+  const KV_BADGE: Record<NonNullable<AiPromptPart['volatility']>, { cls: string; sym: string; title: string }> = {
+    stable: {
+      cls: 'ai-kv-stable',
+      sym: '✓ KV',
+      title: 'Stable prefix — byte-identical every call, so it stays in the KV cache and is never re-evaluated.',
+    },
+    occasional: {
+      cls: 'ai-kv-occasional',
+      sym: '~ KV',
+      title: 'Usually cached — re-evaluated only when this section changes (a memory edit or a roster change).',
+    },
+    live: {
+      cls: 'ai-kv-live',
+      sym: '✗',
+      title: 'Changes most turns (world snapshot / views / conversation / command) — re-evaluated, not served from cache.',
+    },
+  };
+  function kvBadge(v: AiPromptPart['volatility']): string {
+    if (!v) return '';
+    const b = KV_BADGE[v];
+    return `<span class="ai-kv ${b.cls}" title="${b.title}">${b.sym}</span>`;
+  }
+
+  // The steady-state expected cache share for the current template: the stable +
+  // occasional sections are byte-identical between typical calls, so the cache
+  // holds through them and re-evaluates from the first 'live' section onward.
+  // That boundary (usually "World context") and the % before it are the target
+  // the History tab's measured "~X% cached" should match. Null if no live section
+  // (nothing would ever re-evaluate — shouldn't happen).
+  function templateCacheTarget(parts: AiPromptPart[]): { pct: number; boundary: string } | null {
+    const total = parts.reduce((sum, p) => sum + p.content.length, 0) || 1;
+    let cached = 0;
+    for (const p of parts) {
+      if (p.volatility === 'live') return { pct: Math.round((cached / total) * 100), boundary: p.label };
+      cached += p.content.length;
+    }
+    return null;
+  }
+
   // One prompt section in View Pretty. Short sections stay as plain, always-
   // visible cards; sections over COLLAPSE_THRESHOLD chars become a <details> so
   // the big ones (System, World, Voice) can be folded away. The open/closed
   // state is driven by openParts (see the 'toggle' listener) so a background
   // refetch doesn't reset what the reader has expanded.
   function partSection(p: AiPromptPart, cpt: number): string {
-    const size = `<span class="ai-part-size">${sizeLabel(p.content.length, cpt)}</span>`;
+    const meta = `${kvBadge(p.volatility)}<span class="ai-part-size">${sizeLabel(p.content.length, cpt)}</span>`;
     const pre = `<pre>${esc(p.content)}</pre>`;
     if (p.content.length <= COLLAPSE_THRESHOLD) {
-      return `<section class="ai-part"><h3>${esc(p.label)}${size}</h3>${pre}</section>`;
+      return `<section class="ai-part"><h3>${esc(p.label)}${meta}</h3>${pre}</section>`;
     }
     const open = openParts.has(p.label) ? ' open' : '';
     return (
       `<details class="ai-part ai-part-fold" data-part="${esc(p.label)}"${open}>` +
-      `<summary><span class="ai-part-label">${esc(p.label)}</span>${size}</summary>${pre}</details>`
+      `<summary><span class="ai-part-label">${esc(p.label)}</span>${meta}</summary>${pre}</details>`
     );
   }
 
