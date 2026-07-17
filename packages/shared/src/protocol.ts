@@ -6,7 +6,14 @@
 //                orchestrator). Kept in the model now so future services
 //                (spectators, metrics) slot in without protocol changes.
 import type { Action, ActionRecord } from './actions.js';
-import type { AiConfigView, AiExchange, AiPending, MemoryOp, MemoryRevision } from './ai.js';
+import type {
+  AiConfigView,
+  AiExchange,
+  AiPending,
+  AiRuntimeStatus,
+  MemoryOp,
+  MemoryRevision,
+} from './ai.js';
 import type { TickStatsSnapshot } from './perf.js';
 import type { World, WorldSettings } from './types.js';
 
@@ -50,6 +57,10 @@ export type ClientMsg =
   | { m: 'command'; text: string }
   // Ask the host for an agent's full history + current prompt config.
   | { m: 'aiHistoryReq'; agent: string }
+  // Ask the host for the live backend runtime status (daemon up, resident
+  // models / `ollama ps`, host memory/CPU). Polled by an open Config tab, since
+  // this state changes without any player action.
+  | { m: 'aiStatusReq'; agent: string }
   // Wipe an agent's conversation/exchange history (e.g. to clear context
   // poisoning). Does not touch the world or saved memory — just the chat log.
   | { m: 'aiClear'; agent: string }
@@ -105,6 +116,9 @@ export type HostMsg =
   // A lightweight nudge that a new exchange was recorded, so an open history
   // window can refetch. Kept payload-free to stay cheap on the broadcast path.
   | { m: 'aiEvent'; agent: string }
+  // Reply to aiStatusReq: the backend's live runtime status (daemon reachability,
+  // resident models, active-model load state, host memory/CPU).
+  | { m: 'aiStatus'; agent: string; status: AiRuntimeStatus }
   // Drive ONE player's on-screen camera (in response to their own command, e.g.
   // "show me unit-2"). Any subset of fields: pan to (cx,cy) and/or set the zoom
   // via tilesAcross. Client-side view state only — never touches the world.

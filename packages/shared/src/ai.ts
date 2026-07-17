@@ -125,6 +125,59 @@ export interface AiSettings {
   options: Record<string, unknown>;
 }
 
+/** One model the daemon currently has RESIDENT in memory — a row of
+ *  `ollama ps`. Lets players see everything that's loaded (not just the active
+ *  one), so an unexpected second resident model — the usual cause of memory
+ *  pressure — is visible. Sizes are megabytes; `vramMB` is the GPU/unified-
+ *  memory footprint (on Apple Silicon that IS the model's memory cost). */
+export interface AiLoadedModel {
+  name: string;
+  /** Total model size the daemon reports (`size`). */
+  sizeMB?: number;
+  /** Portion resident in GPU/VRAM (`size_vram`). On unified-memory Macs this is
+   *  the whole thing; on a split GPU it's the offloaded share. */
+  vramMB?: number;
+  /** Seconds until the daemon unloads it (from `expires_at`); the keep-alive
+   *  countdown. Absent if the daemon didn't report an expiry. */
+  expiresInSec?: number;
+}
+
+/** Host machine resource snapshot, sampled per status poll. The model runs on
+ *  the host, so this is where memory pressure shows up. `memUsedMB`/`memTotalMB`
+ *  are system RAM (Node `os`); on macOS `freemem` is conservative (excludes
+ *  reclaimable cache), so treat "used" as an upper bound. `cpuPct` is 1-minute
+ *  load average normalized to core count. GPU-utilization isn't included — it's
+ *  not cheaply readable cross-platform without privileged tooling. */
+export interface HostResources {
+  memTotalMB: number;
+  memUsedMB: number;
+  /** Free system RAM as a percentage of total. */
+  memFreePct: number;
+  /** 1-min load average as a percent of total cores (may exceed 100 briefly). */
+  cpuPct?: number;
+  cores: number;
+}
+
+/** Live runtime status of the AI backend, distinct from the (mostly static)
+ *  request settings: whether the daemon is up, whether the ACTIVE model is
+ *  actually resident (vs. still warming or evicted), everything `ollama ps`
+ *  shows, and the host's memory/CPU. Polled by an open Config tab (~2s) — the
+ *  daemon and its loaded set change without any player action. */
+export interface AiRuntimeStatus {
+  /** The daemon answered a live probe just now. */
+  daemonUp: boolean;
+  /** The model tag calls currently run against. */
+  activeModel: string;
+  /** The active model appears in `ollama ps` — loaded and ready. */
+  activeLoaded: boolean;
+  /** A warm-up request is in flight (just switched / booting the model). */
+  warming: boolean;
+  /** Every model the daemon has resident right now (`ollama ps`). */
+  loaded: AiLoadedModel[];
+  /** Host machine memory/CPU at sample time. */
+  host: HostResources;
+}
+
 /** A single request/response round-trip with an AI agent, for the History tab.
  *  Captures exactly what went out and came back so a run is fully auditable. */
 export interface AiExchange {
