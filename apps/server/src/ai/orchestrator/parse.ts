@@ -119,20 +119,19 @@ function validateAction(raw: unknown, world: World): Action | { reject: string }
         : { reject: `build: location ${coordStr(a.at)} out of bounds` };
     }
     case 'dropNearby': {
-      if (typeof a.item !== 'string') return { reject: 'dropNearby: missing item' };
-      const qty = coerceQty(a.qty);
-      return qty
-        ? { type: 'dropNearby', unitId, item: a.item, qty }
-        : { reject: `dropNearby: bad qty ${JSON.stringify(a.qty)}` };
+      // item/qty are optional: omit item to dump the whole bag at the unit's feet.
+      const item = typeof a.item === 'string' ? a.item : undefined;
+      const qty = a.qty == null ? undefined : (coerceQty(a.qty) ?? undefined);
+      return { type: 'dropNearby', unitId, ...(item ? { item } : {}), ...(qty ? { qty } : {}) };
     }
     case 'drop': {
-      if (typeof a.item !== 'string') return { reject: 'drop: missing item' };
-      const qty = coerceQty(a.qty);
-      if (!qty) return { reject: `drop: bad qty ${JSON.stringify(a.qty)}` };
+      // item/qty are optional: omit item to unload the whole bag onto `at` (or the
+      // depot there). `at` is still required — that's where to carry the load.
       const at = coerceCoord(a.at, world);
-      return at
-        ? { type: 'drop', unitId, item: a.item, qty, at }
-        : { reject: `drop: location ${coordStr(a.at)} out of bounds` };
+      if (!at) return { reject: `drop: location ${coordStr(a.at)} out of bounds` };
+      const item = typeof a.item === 'string' ? a.item : undefined;
+      const qty = a.qty == null ? undefined : (coerceQty(a.qty) ?? undefined);
+      return { type: 'drop', unitId, at, ...(item ? { item } : {}), ...(qty ? { qty } : {}) };
     }
     case 'pickup': {
       const at = coerceCoord(a.at, world);

@@ -240,6 +240,16 @@ export class Host {
     return a.x === b.x && a.y === b.y;
   }
 
+  /** Did a hauling unit reach its drop/pickup target? On-tile for a ground
+   *  transfer; adjacent for a storage depot (whose own tile is unwalkable, so the
+   *  unit works it from next door — see sim.haulArrived). */
+  private haulArrived(unit: Unit, at: Coord): boolean {
+    const bid = tileAt(this.world, at.x, at.y)?.building;
+    const depot = bid ? this.world.buildings[bid]?.type === 'storage' : false;
+    if (depot) return Math.abs(unit.pos.x - at.x) + Math.abs(unit.pos.y - at.y) === 1;
+    return Host.coordEq(unit.pos, at);
+  }
+
   /** Set an action's status just after it was applied: cancel resolves instantly
    *  (and interrupts whatever the unit was doing); a job-creating action starts
    *  'ongoing' and becomes the unit's in-flight action (superseding any prior
@@ -354,7 +364,7 @@ export class Host {
         // reached the tile (done); if the job was dropped mid-walk (unreachable)
         // the unit never got there → error.
         if (unit.haulJob) outcome = null;
-        else outcome = Host.coordEq(unit.pos, a.at) ? 'done' : 'error';
+        else outcome = this.haulArrived(unit, a.at) ? 'done' : 'error';
       }
       if (outcome) {
         rec.status = outcome;

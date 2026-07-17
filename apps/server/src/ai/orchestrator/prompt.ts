@@ -211,9 +211,9 @@ function actionsPrompt(): string {
     '  {"type":"harvest","unitId":"<id>","target":"<cell>"}',
     '  {"type":"craft","unitId":"<id>","recipe":"<id>"}',
     '  {"type":"build","unitId":"<id>","building":"<id>","at":"<cell>"}',
-    '  {"type":"drop","unitId":"<id>","item":"<item>","qty":<int>,"at":"<cell>"}',
+    '  {"type":"drop","unitId":"<id>","at":"<cell>","item":"<item>","qty":<int>}',
     '  {"type":"dropNearby","unitId":"<id>","item":"<item>","qty":<int>}',
-    '  {"type":"pickup","unitId":"<id>","at":"<cell>"}',
+    '  {"type":"pickup","unitId":"<id>","at":"<cell>","item":"<item>","qty":<int>}',
     '  {"type":"cancel","unitId":"<id>"}',
     '',
     '  - A unit that is chopping, mining, crafting, or building is BUSY: it ignores',
@@ -230,9 +230,17 @@ function actionsPrompt(): string {
     '    overflow onto the ground as a loose pile (harvesting never stalls). Loose',
     '    piles in sight are listed as "loose:" in the world snapshot.',
     '  - drop/dropNearby set carried items down (dropNearby = at the unit\'s feet,',
-    '    drop = walk to a tile first); pickup collects a loose pile into the bag',
-    '    (add "item"/"qty" to take only some). Use these to gather scattered drops',
-    '    into one place, stock a spot, or lighten a unit before a long move.',
+    '    drop = walk to a tile first); pickup collects them back into the bag. On',
+    '    all three, "item"/"qty" are OPTIONAL: omit "item" to move the WHOLE bag,',
+    '    add "item" (and optionally "qty") to move just some. Use these to gather',
+    '    scattered drops into one place, stock a spot, or lighten a unit before a',
+    '    long move.',
+    '  - A storage building (a "storage depot", type "storage") is a shared stash.',
+    '    drop onto its tile DEPOSITS into it; pickup from its tile WITHDRAWS. The',
+    '    unit works it from an adjacent tile (walk there first). A depot holds a',
+    '    fixed number of stacks; a partial stack still fills a whole slot, so a',
+    '    deposit that would overflow leaves the excess in the bag. Depots in sight',
+    '    show their contents in the world snapshot.',
     '',
     'Player camera — moves the on-screen view of the player who gave THIS command,',
     'and ONLY that player. It never changes the world and never moves anyone else:',
@@ -429,7 +437,13 @@ export function worldContext(world: World): string {
     (k) => `  ${k}: ${terrainCells[k]!.length} tiles at ${terrainCells[k]!.join(' ')}`,
   );
 
-  const builds = Object.values(world.buildings).map((b) => `  ${b.type}@${toCell(b.pos)}`);
+  // Buildings, with a storage depot's current contents inlined so the model
+  // knows what's stashed (and how full) before routing a deposit/withdraw.
+  const builds = Object.values(world.buildings).map((b) => {
+    const store = b.store && Object.entries(b.store).filter(([, n]) => n > 0);
+    const contents = store && store.length ? ` holds ${store.map(([k, n]) => `${n} ${k}`).join(', ')}` : '';
+    return `  ${b.type}@${toCell(b.pos)}${contents}`;
+  });
 
   // NB: the world dimensions are constant, but we deliberately DROP the tick
   // counter here. It advances every tick (BASE_TPS/sec), so including it would

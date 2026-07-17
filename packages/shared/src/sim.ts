@@ -18,7 +18,7 @@ import {
   HARVEST_RULES,
   OBJECT_DEFENSE,
 } from './registry/recipes.js';
-import { DEFAULT_BAG_CAPACITY, itemStack, itemWeight } from './registry/items.js';
+import { DEFAULT_BAG_CAPACITY, STORAGE_SLOTS, itemStack, itemWeight } from './registry/items.js';
 import {
   encumbrance,
   harvestDamage,
@@ -28,7 +28,17 @@ import {
   unitLoad,
 } from './stats.js';
 import { tileAt } from './types.js';
-import type { Coord, Tile, TerrainType, Unit, World, WorldObject, WorldSettings } from './types.js';
+import type {
+  Building,
+  Coord,
+  HaulJob,
+  Tile,
+  TerrainType,
+  Unit,
+  World,
+  WorldObject,
+  WorldSettings,
+} from './types.js';
 import { visibleTiles } from './vision.js';
 
 const MIN_DIM = 8;
@@ -335,60 +345,183 @@ export function applyAction(world: World, action: Action): void {
       return;
     }
     case 'dropNearby': {
-      const have = unit.inventory[action.item] ?? 0;
-      const qty = Math.min(action.qty, have);
-      if (qty <= 0) return;
+      // Dump onto the ground at the unit's own feet (never a depot — units can't
+      // stand on one). No walking; the sim handles placement + spill.
+      if (!hasDroppable(unit, action.item)) return;
       clearJobs(unit);
-      performDrop(world, unit, action.item, qty, unit.pos);
+      performDrop(world, unit, unit.pos, action.item, action.qty);
       return;
     }
     case 'drop': {
-      const have = unit.inventory[action.item] ?? 0;
-      const qty = Math.min(action.qty, have);
-      if (qty <= 0) return;
+      // Target is either standable ground (drop a loose pile) or a storage depot
+      // (deposit — worked from an adjacent tile since the depot blocks its own).
+      if (!hasDroppable(unit, action.item)) return;
       const { x, y } = action.at;
-      if (!isWalkable(world, x, y)) return; // can only drop on standable ground
-      clearJobs(unit);
-      if (unit.pos.x === x && unit.pos.y === y) {
-        performDrop(world, unit, action.item, qty, unit.pos);
-        return;
-      }
-      const path = bfsPath(world, unit.pos, (cx, cy) => cx === x && cy === y, unit.id);
-      if (!path) return;
-      unit.path = path;
-      unit.moveCooldown = 0;
-      unit.haulJob = { op: 'drop', at: { x, y }, item: action.item, qty };
+      if (!isWalkable(world, x, y) && !depotAt(world, x, y)) return;
+      beginHaul(world, unit, 'drop', action.at, action.item, action.qty);
       return;
     }
     case 'pickup': {
       const { x, y } = action.at;
-      if (!isWalkable(world, x, y)) return;
-      const tile = tileAt(world, x, y);
-      if (!tile?.items) return; // nothing loose here
-      clearJobs(unit);
-      if (unit.pos.x === x && unit.pos.y === y) {
-        performPickup(unit, tile, action.item, action.qty);
-        return;
-      }
-      const path = bfsPath(world, unit.pos, (cx, cy) => cx === x && cy === y, unit.id);
-      if (!path) return;
-      unit.path = path;
-      unit.moveCooldown = 0;
-      unit.haulJob = { op: 'pickup', at: { x, y }, item: action.item, qty: action.qty };
+      const depot = depotAt(world, x, y);
+      if (!depot && !isWalkable(world, x, y)) return;
+      // Nothing to grab? (empty depot / bare ground)
+      if (depot ? !depot.store : !tileAt(world, x, y)?.items) return;
+      beginHaul(world, unit, 'pickup', action.at, action.item, action.qty);
       return;
     }
   }
 }
 
-/** Move up to `qty` of `item` from the bag onto the ground at `at` (with spill).
- *  A no-op when the unit isn't carrying any. */
-function performDrop(world: World, unit: Unit, item: string, qty: number, at: Coord): void {
+/** Kick off a drop/pickup toward tile `at`. If the unit is already in range
+ *  (on the tile for ground, adjacent for a depot) it happens this instant;
+ *  otherwise the unit paths there and a haul job finishes it on arrival. */
+function beginHaul(
+  world: World,
+  unit: Unit,
+  op: HaulJob['op'],
+  at: Coord,
+  item?: string,
+  qty?: number,
+): void {
+  clearJobs(unit);
+  if (haulArrived(world, unit, at)) {
+    if (op === 'drop') performDropOp(world, unit, at, item, qty);
+    else performPickupOp(world, unit, at, item, qty);
+    return;
+  }
+  const path = bfsPath(world, unit.pos, haulReached(world, at), unit.id);
+  if (!path) return;
+  unit.path = path;
+  unit.moveCooldown = 0;
+  unit.haulJob = { op, at: { ...at }, item, qty };
+}
+
+/** The storage depot occupying a tile, or undefined when the tile holds no
+ *  depot. Depots block their own tile, so units deposit/withdraw from adjacent. */
+function depotAt(world: World, x: number, y: number): Building | undefined {
+  const id = tileAt(world, x, y)?.building;
+  if (!id) return undefined;
+  const b = world.buildings[id];
+  return b && b.type === 'storage' ? b : undefined;
+}
+
+/** The arrival predicate for a haul target: standing ON a ground tile, or on any
+ *  tile ADJACENT to a depot (whose own tile is unwalkable). */
+function haulReached(world: World, at: Coord): (x: number, y: number) => boolean {
+  return depotAt(world, at.x, at.y)
+    ? (x, y) => isAdjacent(x, y, at.x, at.y)
+    : (x, y) => x === at.x && y === at.y;
+}
+
+/** Whether the unit is close enough to work a haul target right now. */
+function haulArrived(world: World, unit: Unit, at: Coord): boolean {
+  return haulReached(world, at)(unit.pos.x, unit.pos.y);
+}
+
+/** True when the bag holds something the drop could place: the named item, or
+ *  anything at all when the item is omitted (whole-bag drop). */
+function hasDroppable(unit: Unit, item?: string): boolean {
+  if (item) return (unit.inventory[item] ?? 0) > 0;
+  return Object.keys(unit.inventory).length > 0;
+}
+
+/** Move resources from the bag onto the ground at `at` (with spill). With `item`
+ *  set, drops up to `qty` of it (all of it when `qty` is omitted); with `item`
+ *  omitted, dumps the whole bag (`qty` ignored). A no-op when nothing matches. */
+function performDrop(world: World, unit: Unit, at: Coord, item?: string, qty?: number): void {
+  const keys = item ? [item] : Object.keys(unit.inventory);
+  const cap = item ? qty : undefined; // qty only narrows a single named item
+  for (const key of keys) {
+    const have = unit.inventory[key] ?? 0;
+    const move = cap != null ? Math.min(cap, have) : have;
+    if (move <= 0) continue;
+    unit.inventory[key] = have - move;
+    if (unit.inventory[key]! <= 0) delete unit.inventory[key];
+    dropOnGround(world, at, key, move);
+  }
+}
+
+/** Drop resources at `at`, routing to the storage depot there (deposit) or the
+ *  bare ground (loose pile). Deposits respect the depot's stack cap; anything
+ *  that won't fit stays in the bag. Item/qty semantics match performDrop. */
+function performDropOp(world: World, unit: Unit, at: Coord, item?: string, qty?: number): void {
+  const depot = depotAt(world, at.x, at.y);
+  if (!depot) {
+    performDrop(world, unit, at, item, qty);
+    return;
+  }
+  const keys = item ? [item] : Object.keys(unit.inventory);
+  const cap = item ? qty : undefined;
+  for (const key of keys) {
+    const have = unit.inventory[key] ?? 0;
+    const want = cap != null ? Math.min(cap, have) : have;
+    if (want > 0) depositToDepot(unit, depot, key, want);
+  }
+}
+
+/** Pick resources up at `at`, routing to the storage depot there (withdraw) or
+ *  the loose ground pile. Item/qty semantics match performPickup. */
+function performPickupOp(world: World, unit: Unit, at: Coord, item?: string, qty?: number): void {
+  const depot = depotAt(world, at.x, at.y);
+  if (depot) {
+    withdrawFromDepot(unit, depot, item, qty);
+    return;
+  }
+  const tile = tileAt(world, at.x, at.y);
+  if (tile) performPickup(unit, tile, item, qty);
+}
+
+/** How many stack-slots a depot's contents occupy — a partial stack still costs
+ *  a whole slot (ceil per item), so capacity is Σ ceil(qty / itemStack). */
+function depotSlotsUsed(store: Record<string, number>): number {
+  let n = 0;
+  for (const k in store) n += Math.ceil((store[k] ?? 0) / itemStack(k));
+  return n;
+}
+
+/** Move up to `qty` of `item` from the bag into the depot, honouring the
+ *  STORAGE_SLOTS stack cap. A partial stack occupies a full slot, so an item
+ *  can grow only into the slots not already claimed by others. */
+function depositToDepot(unit: Unit, depot: Building, item: string, qty: number): void {
   const have = unit.inventory[item] ?? 0;
-  const move = Math.min(qty, have);
-  if (move <= 0) return;
-  unit.inventory[item] = have - move;
+  const want = Math.min(qty, have);
+  if (want <= 0) return;
+  const store = depot.store ?? (depot.store = {});
+  const stack = itemStack(item);
+  const cur = store[item] ?? 0;
+  // Slots left for THIS item = total minus those other items already claim.
+  const usedOther = depotSlotsUsed(store) - Math.ceil(cur / stack);
+  const room = Math.max(0, (STORAGE_SLOTS - usedOther) * stack - cur);
+  const add = Math.min(want, room);
+  if (add <= 0) return;
+  store[item] = cur + add;
+  unit.inventory[item] = have - add;
   if (unit.inventory[item]! <= 0) delete unit.inventory[item];
-  dropOnGround(world, at, item, move);
+}
+
+/** Load depot contents into the bag, up to its weight capacity. With `item` set,
+ *  only that resource (at most `qty`); otherwise everything the bag can hold.
+ *  Mirrors performPickup but reads/writes the depot's store, clearing it when
+ *  emptied so the building drops back to "no store". */
+function withdrawFromDepot(unit: Unit, depot: Building, item?: string, qty?: number): void {
+  const store = depot.store;
+  if (!store) return;
+  const keys = item ? [item] : Object.keys(store);
+  for (const key of keys) {
+    const avail = store[key] ?? 0;
+    if (avail <= 0) continue;
+    const w = itemWeight(key);
+    const room = unitCapacity(unit) - unitLoad(unit);
+    const fits = w > 0 ? Math.floor(room / w) : avail;
+    const want = qty != null ? Math.min(qty, avail) : avail;
+    const take = Math.max(0, Math.min(want, fits));
+    if (take <= 0) continue;
+    unit.inventory[key] = (unit.inventory[key] ?? 0) + take;
+    store[key] = avail - take;
+    if (store[key]! <= 0) delete store[key];
+  }
+  if (Object.keys(store).length === 0) depot.store = undefined;
 }
 
 /** Load loose ground items at `tile` into the bag, up to its weight capacity.
@@ -577,22 +710,18 @@ function stepBuild(world: World, unit: Unit): void {
 function stepHaul(world: World, unit: Unit): void {
   const job = unit.haulJob!;
   const { at } = job;
-  if (unit.pos.x !== at.x || unit.pos.y !== at.y) {
-    const path = bfsPath(world, unit.pos, (cx, cy) => cx === at.x && cy === at.y, unit.id);
+  if (!haulArrived(world, unit, at)) {
+    const path = bfsPath(world, unit.pos, haulReached(world, at), unit.id);
     if (path && path.length > 0) {
       unit.path = path;
       unit.moveCooldown = 0;
     } else {
-      unit.haulJob = undefined; // can't reach the tile anymore
+      unit.haulJob = undefined; // can't reach the target anymore
     }
     return;
   }
-  if (job.op === 'drop') {
-    if (job.item) performDrop(world, unit, job.item, job.qty ?? 0, at);
-  } else {
-    const tile = tileAt(world, at.x, at.y);
-    if (tile) performPickup(unit, tile, job.item, job.qty);
-  }
+  if (job.op === 'drop') performDropOp(world, unit, at, job.item, job.qty);
+  else performPickupOp(world, unit, at, job.item, job.qty);
   unit.haulJob = undefined;
 }
 

@@ -118,6 +118,12 @@ export interface Building {
   id: string;
   type: string;
   pos: Coord;
+  /** Stored resources (item id → quantity) for a storage depot. Capacity is
+   *  measured in STACKS: Σ ceil(qty / itemStack) must stay ≤ STORAGE_SLOTS, so a
+   *  partial stack still occupies a whole slot. Absent on non-storage buildings
+   *  and empty depots. Units deposit/withdraw by dropping/picking up at the
+   *  depot tile. */
+  store?: Record<string, number>;
 }
 
 export interface World {

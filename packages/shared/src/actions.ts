@@ -16,15 +16,17 @@ export type Action =
   | { type: 'craft'; unitId: string; recipe: string }
   // Walk to a tile and raise a building there, consuming inventory on completion.
   | { type: 'build'; unitId: string; building: string; at: Coord }
-  // Carry `qty` of `item` from the bag and drop it on the ground at tile `at`
-  // (the unit walks there first). Excess beyond a tile's stack max spills to
-  // nearby ground.
-  | { type: 'drop'; unitId: string; item: string; qty: number; at: Coord }
-  // Drop `qty` of `item` on the ground right where the unit stands — no walking,
-  // placement handled by the sim (spills to nearby ground when the tile is full).
-  | { type: 'dropNearby'; unitId: string; item: string; qty: number }
-  // Pick up loose ground resources at tile `at` into the bag (the unit walks
-  // there first). `item`/`qty` narrow it; omit to grab everything that fits.
+  // Carry resources from the bag and drop them at tile `at` (the unit walks
+  // there first). Onto a storage-depot tile this DEPOSITS into the depot; onto
+  // plain ground it drops a loose pile (spilling to nearby ground when full).
+  // `item`/`qty` narrow it; omit `item` to unload the whole bag.
+  | { type: 'drop'; unitId: string; at: Coord; item?: string; qty?: number }
+  // Drop resources on the ground right where the unit stands — no walking.
+  // `item`/`qty` narrow it; omit `item` to dump the whole bag at the unit's feet.
+  | { type: 'dropNearby'; unitId: string; item?: string; qty?: number }
+  // Pick up resources at tile `at` into the bag (the unit walks there first).
+  // From a storage-depot tile this WITHDRAWS; from plain ground it collects a
+  // loose pile. `item`/`qty` narrow it; omit to grab everything that fits.
   | { type: 'pickup'; unitId: string; at: Coord; item?: string; qty?: number }
   // Stop a unit's current non-interruptible job (craft/build/harvest), leaving
   // it idle. The one command accepted against a busy unit; craft inputs are
@@ -105,6 +107,13 @@ export function unitShort(unitId: string): string {
   return m ? `U${m[1]}` : unitId;
 }
 
+/** "all", "5 wood", or "wood" — a compact item/quantity phrase for drop/pickup
+ *  labels, handling the optional item (whole bag) and optional quantity. */
+function itemQty(item: string | undefined, qty: number | undefined): string {
+  if (!item) return 'all';
+  return qty != null ? `${qty} ${item}` : item;
+}
+
 /** A short human-readable label for an action, e.g. "Craft pickaxe" or
  *  "Move → M9". Used by the Actions panel and AI history. Coordinates render as
  *  spreadsheet-style cells (see coords.ts) so the log matches the language the
@@ -120,13 +129,11 @@ export function describeAction(action: Action): string {
     case 'build':
       return `Build ${action.building} @ ${toCell(action.at)}`;
     case 'drop':
-      return `Drop ${action.qty} ${action.item} → ${toCell(action.at)}`;
+      return `Drop ${itemQty(action.item, action.qty)} → ${toCell(action.at)}`;
     case 'dropNearby':
-      return `Drop ${action.qty} ${action.item} nearby`;
+      return `Drop ${itemQty(action.item, action.qty)} nearby`;
     case 'pickup':
-      return action.item
-        ? `Pick up ${action.qty ?? ''} ${action.item} @ ${toCell(action.at)}`.replace('  ', ' ')
-        : `Pick up @ ${toCell(action.at)}`;
+      return `Pick up ${itemQty(action.item, action.qty)} @ ${toCell(action.at)}`;
     case 'cancel':
       return 'Cancel job';
   }

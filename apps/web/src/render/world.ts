@@ -241,7 +241,11 @@ function buildDyn(world: World, r: CullRange, selId: string | undefined): string
   for (const id in world.buildings) {
     const b = world.buildings[id]!;
     if (b.pos.x < r.x0 || b.pos.x > r.x1 || b.pos.y < r.y0 || b.pos.y > r.y1) continue;
-    parts.push(`<g transform="translate(${b.pos.x} ${b.pos.y})">${buildingSvg(b.type)}</g>`);
+    // A storage depot with contents shows a few item mounds on top, so the
+    // player can see at a glance what's stashed (mirrors loose ground piles).
+    const store = b.type === 'storage' ? b.store : undefined;
+    const inner = store ? `${buildingSvg(b.type)}${itemsSvg(store)}` : buildingSvg(b.type);
+    parts.push(`<g transform="translate(${b.pos.x} ${b.pos.y})">${inner}</g>`);
   }
 
   // Construction sites: a unit with an active build job stakes out its plot the
@@ -667,7 +671,18 @@ function handleClick(e: PointerEvent, container: HTMLElement, view: View): void 
   if (!selId || !world.units[selId]) return;
 
   const tile = tileAt(world, x, y);
-  if (tile?.object) {
+  const bld = tile?.building ? world.buildings[tile.building] : undefined;
+  if (bld?.type === 'storage') {
+    // Click a storage depot with a unit selected: deposit the whole bag if the
+    // unit is carrying anything, otherwise withdraw everything that fits. Both
+    // reuse the depot-aware drop/pickup (the unit walks adjacent, then transfers).
+    const carrying = Object.values(world.units[selId]!.inventory).some((n) => n > 0);
+    sendAction(
+      carrying
+        ? { type: 'drop', unitId: selId, at: { x, y } }
+        : { type: 'pickup', unitId: selId, at: { x, y } },
+    );
+  } else if (tile?.object) {
     sendAction({ type: 'harvest', unitId: selId, target: { x, y } });
   } else if (tile?.items) {
     // Loose pile on the ground → send the unit to pick it up (mirrors the
