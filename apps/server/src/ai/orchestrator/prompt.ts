@@ -12,6 +12,8 @@ import {
   RECIPES,
   TERRAIN_COLORS,
   describeAction,
+  toCell,
+  toCellXY,
   effectiveSpeed,
   encumbrance,
   harvestDamage,
@@ -203,11 +205,12 @@ function actionsPrompt(): string {
     'array is a list of them. They fall into two groups:',
     '',
     'Unit control — commands to a single unit. Use the EXACT unitId from the world',
-    'snapshot below (e.g. "unit-0"), quoted as a string — never a bare number like 0:',
-    '  {"type":"move","unitId":"<id>","to":{"x":<int>,"y":<int>}}',
-    '  {"type":"harvest","unitId":"<id>","target":{"x":<int>,"y":<int>}}',
+    'snapshot below (e.g. "unit-0"), quoted as a string — never a bare number like 0.',
+    'Every <cell> is a coordinate string like "AF29" (see Coordinates below):',
+    '  {"type":"move","unitId":"<id>","to":"<cell>"}',
+    '  {"type":"harvest","unitId":"<id>","target":"<cell>"}',
     '  {"type":"craft","unitId":"<id>","recipe":"<id>"}',
-    '  {"type":"build","unitId":"<id>","building":"<id>","at":{"x":<int>,"y":<int>}}',
+    '  {"type":"build","unitId":"<id>","building":"<id>","at":"<cell>"}',
     '  {"type":"cancel","unitId":"<id>"}',
     '',
     '  - A unit that is chopping, mining, crafting, or building is BUSY: it ignores',
@@ -222,7 +225,7 @@ function actionsPrompt(): string {
     '',
     'Player camera — moves the on-screen view of the player who gave THIS command,',
     'and ONLY that player. It never changes the world and never moves anyone else:',
-    '  {"type":"setView","center":{"x":<int>,"y":<int>},"tilesAcross":<int>}',
+    '  {"type":"setView","center":"<cell>","tilesAcross":<int>}',
     '',
     '  - Use it when a player asks to SEE something — "show me unit-2", "look at',
     '    the lake", "zoom out". "center" pans that player\'s view to the tile;',
@@ -230,13 +233,18 @@ function actionsPrompt(): string {
     '    in closer, larger = more of the map). Include either or both. The "Player',
     '    views" section below tells you where each player is currently looking.',
     '',
-    'Coordinates & directions (for every {x,y} above):',
-    '  - Tiles are addressed by (x, y). (0,0) is the TOP-LEFT corner of the world.',
-    '  - +x = EAST (right on screen); -x = WEST (left).',
-    '  - +y = SOUTH (down on screen); -y = NORTH (up). Larger y is further DOWN.',
-    '  - So: north/up = smaller y, south/down = larger y, east/right = larger x,',
-    '    west/left = smaller x. Use this to read a player\'s intent ("send one north")',
-    '    and to describe things relative to what they see ("the ore to your south").',
+    'Coordinates & directions (every <cell> above, and every tile position below):',
+    '  - Tiles are addressed like spreadsheet cells: a COLUMN letter for the',
+    '    horizontal position, then a ROW number for the vertical — e.g. "A1", "F12",',
+    '    "AF29". Columns run A, B, … Z, AA, AB, … (A is leftmost). Rows start at 1.',
+    '  - "A1" is the TOP-LEFT corner of the world.',
+    '  - EAST (right on screen) = a LATER column letter; WEST (left) = earlier.',
+    '  - SOUTH (down) = a LARGER row number; NORTH (up) = smaller.',
+    '  - So: "send one north" = same column, smaller row; "the ore to your south" =',
+    '    same column, larger row. Read a player\'s intent this way, and describe',
+    '    things relative to what they see the same way.',
+    '  - Emit every coordinate EXACTLY in this cell form, as a quoted string like',
+    '    "AF29" — never as {"x":..,"y":..} and never a bare number.',
   ].join('\n');
 }
 
@@ -328,7 +336,7 @@ export function worldContext(world: World): string {
 
   // One compact JSON object per unit. Rendering ids as `"id":"unit-0"` (rather
   // than in prose) removes the ambiguity that had the model emitting a bare "0";
-  // the {x,y} coord shape here also mirrors exactly what actions must send back.
+  // positions are cell strings ("AF29"), exactly the form actions must send back.
   const units = Object.values(world.units).map((u) => {
     // Compact stats: hp/maxHp, armor, bag load/capacity, encumbrance %, and the
     // current effective speed (tiles/s) after that encumbrance. A heavy bag both
@@ -337,7 +345,7 @@ export function worldContext(world: World): string {
     const load = Math.round(unitLoad(u) * 10) / 10;
     const obj: Record<string, unknown> = {
       id: u.id,
-      pos: { x: u.pos.x, y: u.pos.y },
+      pos: toCell(u.pos),
       inv: u.inventory,
       tools: u.tools,
       hp: `${Math.round(u.hp ?? 100)}/${Math.round(u.maxHp ?? 100)}`,
@@ -348,7 +356,7 @@ export function worldContext(world: World): string {
     };
     if (u.job) {
       obj.status = u.job.verb;
-      obj.at = { x: u.job.target.x, y: u.job.target.y };
+      obj.at = toCell(u.job.target);
     } else if (u.craftJob) {
       obj.status = `craft ${u.craftJob.recipe}`;
       obj.progress = jobProgress(u.craftJob.remaining, u.craftJob.total);
@@ -361,10 +369,10 @@ export function worldContext(world: World): string {
       // movement is 4-connected). Models pick "nearest" badly from a raw coord
       // list, so we precompute it; this is what stops a unit crossing the map to
       // a far tree when a closer one exists.
-      const nearest: Record<string, { x: number; y: number; d: number }> = {};
+      const nearest: Record<string, { at: string; d: number }> = {};
       for (const [kind, list] of Object.entries(cells)) {
         const near = nearestCell(u.pos, list);
-        if (near) nearest[kind] = { x: near.cell.x, y: near.cell.y, d: near.dist };
+        if (near) nearest[kind] = { at: toCell(near.cell), d: near.dist };
       }
       if (Object.keys(nearest).length) obj.nearest = nearest;
     }
@@ -375,7 +383,7 @@ export function worldContext(world: World): string {
 
   const resources = Object.keys(cells).map((k) => {
     const list = cells[k]!;
-    const at = list.map((c) => `(${c.x},${c.y})`).join(' ');
+    const at = list.map((c) => toCell(c)).join(' ');
     return `  ${k}: ${list.length} visible${list.length ? ` at ${at}` : ''}`;
   });
 
@@ -389,15 +397,13 @@ export function worldContext(world: World): string {
     const [x, y] = key.split(',').map(Number) as [number, number];
     const terrain = world.tiles[y * world.width + x]?.terrain;
     if (!terrain || terrain === 'grass') continue;
-    (terrainCells[terrain] ??= []).push(`(${x},${y})`);
+    (terrainCells[terrain] ??= []).push(toCellXY(x, y));
   }
   const terrain = Object.keys(terrainCells).map(
     (k) => `  ${k}: ${terrainCells[k]!.length} tiles at ${terrainCells[k]!.join(' ')}`,
   );
 
-  const builds = Object.values(world.buildings).map(
-    (b) => `  ${b.type}@(${b.pos.x},${b.pos.y})`,
-  );
+  const builds = Object.values(world.buildings).map((b) => `  ${b.type}@${toCell(b.pos)}`);
 
   // NB: the world dimensions are constant, but we deliberately DROP the tick
   // counter here. It advances every tick (BASE_TPS/sec), so including it would
@@ -407,8 +413,9 @@ export function worldContext(world: World): string {
   // Omitting it lets a stationary-world follow-up reuse the cache in full.
   return [
     `World ${world.width}x${world.height}.`,
-    'Units (one compact JSON object per line; "nearest" gives each idle unit its',
-    'closest target of each kind as {x,y,d} where d is the tile distance):',
+    'Units (one compact JSON object per line; positions are cells like "AF29".',
+    '"nearest" gives each idle unit its closest target of each kind as {at,d} where',
+    'at is the cell and d is the tile distance):',
     ...units,
     `Idle units, free to assign right now: ${idleIds.length ? idleIds.join(', ') : 'none'}.`,
     'Resources your units can currently see (fog of war hides the rest):',
@@ -436,8 +443,8 @@ export function playerViewsContext(cameras: PlayerCameraView[]): string {
       const x0 = cx - Math.floor(w / 2);
       const y0 = cy - Math.floor(h / 2);
       return (
-        `  ${c.name}: centered at (${cx},${cy}), showing a ${w}x${h} tile area ` +
-        `(x ${x0}..${x0 + w}, y ${y0}..${y0 + h})`
+        `  ${c.name}: centered at ${toCellXY(cx, cy)}, showing a ${w}x${h} tile area ` +
+        `(${toCellXY(x0, y0)}..${toCellXY(x0 + w - 1, y0 + h - 1)})`
       );
     })
     .join('\n');

@@ -5,7 +5,7 @@
 // in-bounds, known recipe/building); anything that fails is dropped —
 // applyAction is the final authority, but rejecting garbage here keeps the
 // audit log honest about what we actually tried to run.
-import { BUILDINGS, RECIPES } from '@game/shared';
+import { BUILDINGS, RECIPES, parseCell, toCell } from '@game/shared';
 import type { Action, Coord, MemoryOp, ViewCommand, World } from '@game/shared';
 import { MEMORY_MAX_LEN } from './memory.js';
 
@@ -22,25 +22,33 @@ function sliceJson(cleaned: string, open: string, close: string): unknown {
   }
 }
 
-function isCoord(v: unknown, world: World): v is Coord {
-  if (typeof v !== 'object' || v === null) return false;
-  const c = v as Record<string, unknown>;
-  return (
-    Number.isInteger(c.x) &&
-    Number.isInteger(c.y) &&
-    (c.x as number) >= 0 &&
-    (c.y as number) >= 0 &&
-    (c.x as number) < world.width &&
-    (c.y as number) < world.height
-  );
+/** Coerce a model-supplied coordinate to an in-bounds Coord, or null. The prompt
+ *  asks for a cell string ("AF29"), so that's the primary form; we also still
+ *  accept the legacy {x,y} object so a transitional/confused response doesn't
+ *  break. Bounds are checked against the real world here. */
+function coerceCoord(v: unknown, world: World): Coord | null {
+  let c: Coord | null = null;
+  if (typeof v === 'string') {
+    c = parseCell(v);
+  } else if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    if (Number.isInteger(o.x) && Number.isInteger(o.y)) c = { x: o.x as number, y: o.y as number };
+  }
+  if (!c || c.x < 0 || c.y < 0 || c.x >= world.width || c.y >= world.height) return null;
+  return c;
 }
 
 /** Best-effort render of a candidate coord for a rejection reason (the value may
- *  be anything the model emitted, not a valid Coord). */
+ *  be anything the model emitted). Cell strings pass through as-is; an {x,y}
+ *  object renders as its cell so the reason speaks the same language as the
+ *  prompt. */
 function coordStr(v: unknown): string {
+  if (typeof v === 'string') return v;
   if (v && typeof v === 'object') {
     const c = v as Record<string, unknown>;
-    if (typeof c.x === 'number' && typeof c.y === 'number') return `(${c.x},${c.y})`;
+    if (typeof c.x === 'number' && typeof c.y === 'number') {
+      return toCell({ x: c.x, y: c.y });
+    }
   }
   return JSON.stringify(v) ?? '(?)';
 }
@@ -77,25 +85,31 @@ function validateAction(raw: unknown, world: World): Action | { reject: string }
   if (!unitId) return { reject: `${type}: unknown unit ${JSON.stringify(a.unitId)}` };
 
   switch (a.type) {
-    case 'move':
-      return isCoord(a.to, world)
-        ? { type: 'move', unitId, to: a.to as Coord }
+    case 'move': {
+      const to = coerceCoord(a.to, world);
+      return to
+        ? { type: 'move', unitId, to }
         : { reject: `move: target ${coordStr(a.to)} out of bounds` };
-    case 'harvest':
-      return isCoord(a.target, world)
-        ? { type: 'harvest', unitId, target: a.target as Coord }
+    }
+    case 'harvest': {
+      const target = coerceCoord(a.target, world);
+      return target
+        ? { type: 'harvest', unitId, target }
         : { reject: `harvest: target ${coordStr(a.target)} out of bounds` };
+    }
     case 'craft':
       return typeof a.recipe === 'string' && RECIPES[a.recipe]
         ? { type: 'craft', unitId, recipe: a.recipe }
         : { reject: `craft: unknown recipe ${JSON.stringify(a.recipe)}` };
-    case 'build':
+    case 'build': {
       if (typeof a.building !== 'string' || !BUILDINGS[a.building]) {
         return { reject: `build: unknown building ${JSON.stringify(a.building)}` };
       }
-      return isCoord(a.at, world)
-        ? { type: 'build', unitId, building: a.building, at: a.at as Coord }
+      const at = coerceCoord(a.at, world);
+      return at
+        ? { type: 'build', unitId, building: a.building, at }
         : { reject: `build: location ${coordStr(a.at)} out of bounds` };
+    }
     case 'cancel':
       return { type: 'cancel', unitId };
     default:
@@ -108,7 +122,8 @@ function validateAction(raw: unknown, world: World): Action | { reject: string }
 function validateView(raw: Record<string, unknown>, world: World): ViewCommand | { reject: string } {
   const cmd: ViewCommand = { type: 'setView' };
   if (raw.center !== undefined) {
-    if (isCoord(raw.center, world)) cmd.center = raw.center as Coord;
+    const center = coerceCoord(raw.center, world);
+    if (center) cmd.center = center;
     else return { reject: `setView: center ${coordStr(raw.center)} out of bounds` };
   }
   if (raw.tilesAcross !== undefined) {
