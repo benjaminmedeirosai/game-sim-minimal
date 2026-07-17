@@ -44,9 +44,10 @@ body { margin: 0; background: var(--bg); color: var(--fg); overflow: hidden; }
   padding: 7px 13px; background: var(--accent); color: #08101f; border: none;
   border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 13px;
 }
-.btn:hover { filter: brightness(1.08); }
+.btn:hover:not(:disabled) { filter: brightness(1.08); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-ghost { background: #262a35; color: var(--fg); }
-.btn-ghost:hover { background: #2f3441; }
+.btn-ghost:hover:not(:disabled) { background: #2f3441; }
 
 /* Visible ring for keyboard navigation across every button variant. */
 .btn:focus-visible,

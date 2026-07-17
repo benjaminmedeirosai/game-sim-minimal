@@ -9,7 +9,10 @@
 // static deploy with no host up, only) thing a visitor sees, so it doubles as
 // the project's landing screen.
 import { connect, net, reconnect } from '../net/client';
-import { savedAllowOthers, savedName } from '../state/identity';
+import { knownNames, savedAllowOthers, savedName } from '../state/identity';
+
+// Sentinel <option> value for "create a new character" in the player picker.
+const NEW_PLAYER = '__new__';
 
 export function mountConnGate(el: HTMLElement): void {
   net.subscribe((s) => {
@@ -27,17 +30,36 @@ export function mountConnGate(el: HTMLElement): void {
   });
 }
 
-/** Wire the join form's submit → connect(name, allowOthers). No-op when the form
- *  isn't the current face. */
+/** Wire the join form: the player picker toggles the name field (existing
+ *  character vs. new one), and submit → connect(name, allowOthers). No-op when
+ *  the form isn't the current face. */
 function wireJoinForm(el: HTMLElement): void {
   const form = el.querySelector<HTMLFormElement>('#gate-join');
   if (!form) return;
+  const picker = form.querySelector<HTMLSelectElement>('#gate-player'); // absent for a first-time browser
+  const nameRow = form.querySelector<HTMLElement>('#gate-name-row')!;
   const input = form.querySelector<HTMLInputElement>('#gate-name')!;
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
+
+  // Show the free-text name field only when creating a new character (or when
+  // there's no picker at all — a brand-new browser starts on the new flow).
+  const isNew = (): boolean => !picker || picker.value === NEW_PLAYER;
+  const syncNameRow = (): void => {
+    nameRow.hidden = !isNew();
+    if (isNew()) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  };
+  picker?.addEventListener('change', () => {
+    if (isNew()) input.value = '';
+    syncNameRow();
+  });
+  syncNameRow();
+
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    const name = input.value.trim();
+    // An existing character comes from the picker; a new one from the text field.
+    const name = isNew() ? input.value.trim() : picker!.value;
     if (!name) {
       input.focus();
       return;
@@ -65,17 +87,25 @@ function shell(inner: string): string {
 }
 
 function joinForm(rejectedReason?: string): string {
-  const name = escapeHtml(savedName());
+  const known = knownNames();
+  const last = savedName();
   const allow = savedAllowOthers() ? 'checked' : '';
   const banner = rejectedReason
     ? `<p class="gate-reject">${escapeHtml(rejectedReason)}</p>`
     : '';
+  // The name field is prefilled only for a first-time browser (no picker yet);
+  // returning players choose their character from the picker instead.
+  const namePrefill = known.length === 0 ? escapeHtml(last) : '';
   return shell(`
     ${banner}
     <form class="gate-form" id="gate-join">
-      <label class="gate-label" for="gate-name">Your name</label>
-      <input class="gate-input" id="gate-name" type="text" maxlength="24" autocomplete="off"
-             spellcheck="false" placeholder="Pick a name" value="${name}" />
+      ${playerPicker(known, last)}
+
+      <div id="gate-name-row" class="gate-name-row">
+        <label class="gate-label" for="gate-name">${known.length ? 'New character name' : 'Your name'}</label>
+        <input class="gate-input" id="gate-name" type="text" maxlength="24" autocomplete="off"
+               spellcheck="false" placeholder="Pick a name" value="${namePrefill}" />
+      </div>
 
       <label class="gate-label" for="gate-world">World</label>
       <select class="gate-input" id="gate-world">
@@ -91,6 +121,26 @@ function joinForm(rejectedReason?: string): string {
 
       <button class="btn gate-join-btn" type="submit">Join the colony</button>
     </form>`);
+}
+
+/** The player picker: known characters on this browser + a "new character"
+ *  entry. Returns '' for a first-time browser (nothing to pick yet — the name
+ *  field stands alone). Preselects the last-used character. */
+function playerPicker(known: string[], last: string): string {
+  if (known.length === 0) return '';
+  const lastKey = last.trim().toLowerCase();
+  const opts = known
+    .map((n) => {
+      const sel = n.trim().toLowerCase() === lastKey ? ' selected' : '';
+      return `<option value="${escapeHtml(n)}"${sel}>${escapeHtml(n)}</option>`;
+    })
+    .join('');
+  return `
+    <label class="gate-label" for="gate-player">Player</label>
+    <select class="gate-input" id="gate-player">
+      ${opts}
+      <option value="${NEW_PLAYER}">＋ New character…</option>
+    </select>`;
 }
 
 function connecting(): string {

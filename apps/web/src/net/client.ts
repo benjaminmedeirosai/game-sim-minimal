@@ -23,6 +23,7 @@ import { clampTilesAcross, currentView, refreshViewportInfo } from '../render/vi
 import { recordLatency, recordSnapshot } from '../state/clientPerf';
 import {
   deviceToken,
+  rememberName,
   saveAllowOthers,
   saveCamera,
   saveName,
@@ -205,6 +206,10 @@ function handleHostMsg(msg: HostMsg): void {
       // Accepted. NOW we're truly connected: stash the account's saved camera
       // (used on the first snapshot), start the chat + latency probes.
       hostCamera = msg.lastCamera;
+      // Remember the canonical name for the join screen's player picker, so a
+      // returning player reselects this character instead of retyping (and
+      // risking a new one).
+      rememberName(msg.you.name);
       net.set({ status: 'connected', me: msg.you, roster: msg.roster, error: undefined });
       sendAiHistoryReq(ORCHESTRATOR_AGENT);
       startPinging();

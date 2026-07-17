@@ -13,6 +13,11 @@ const TOKEN_KEY = 'gsm.deviceToken';
 const NAME_KEY = 'gsm.userName';
 const ALLOW_KEY = 'gsm.allowOthers';
 const CAMERA_KEY = 'gsm.lastCamera';
+const KNOWN_KEY = 'gsm.knownNames';
+
+// Cap the remembered-players list so a long-lived browser doesn't grow it
+// unbounded; the join screen only needs the handful you actually use.
+const KNOWN_MAX = 20;
 
 function read(key: string): string | null {
   try {
@@ -55,6 +60,31 @@ export function savedAllowOthers(): boolean {
 
 export function saveAllowOthers(allow: boolean): void {
   write(ALLOW_KEY, allow ? '1' : '0');
+}
+
+/** The display names this browser has successfully joined as, most-recent
+ *  first. Drives the join screen's player picker so a returning player selects
+ *  their character instead of accidentally minting a new one by retyping. */
+export function knownNames(): string[] {
+  const raw = read(KNOWN_KEY);
+  if (!raw) return [];
+  try {
+    const list = JSON.parse(raw) as unknown;
+    if (Array.isArray(list)) return list.filter((n): n is string => typeof n === 'string');
+  } catch {
+    /* ignore malformed */
+  }
+  return [];
+}
+
+/** Record a name we joined as (canonical casing from the host). Moves it to the
+ *  front (most-recent), de-duplicated case-insensitively so "Bob"/"bob" — one
+ *  account on the host — don't both linger in the picker. */
+export function rememberName(name: string): void {
+  const key = name.trim().toLowerCase();
+  if (!key) return;
+  const next = [name, ...knownNames().filter((n) => n.trim().toLowerCase() !== key)].slice(0, KNOWN_MAX);
+  write(KNOWN_KEY, JSON.stringify(next));
 }
 
 export function savedCamera(): CameraState | null {
