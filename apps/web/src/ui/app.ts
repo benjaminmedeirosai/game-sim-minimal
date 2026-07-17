@@ -1,4 +1,4 @@
-import { connect, net } from '../net/client';
+import { net } from '../net/client';
 import { camera, game } from '../state/game';
 import { refreshViewportInfo } from '../render/viewport';
 import { mountWorld } from '../render/world';
@@ -27,7 +27,7 @@ export function mountApp(root: HTMLElement): void {
         <span class="brand">game-sim-minimal</span>
         <span class="spacer"></span>
         <div class="topbar-actions">
-          <button class="btn btn-ghost" data-panel="new" title="Create a new world">New World</button>
+          <button class="btn btn-ghost" data-panel="new" title="New World is disabled for now" disabled>New World</button>
           <button class="btn btn-ghost" data-panel="room" title="Room: connected players & host">Room <span id="peer-count" class="count">0</span></button>
           <button class="btn btn-ghost" data-ai title="AI history &amp; prompt config">AI</button>
           <button class="btn btn-ghost" data-panel="hud" title="Performance stats (server + this client)">Perf</button>
@@ -153,6 +153,6 @@ export function mountApp(root: HTMLElement): void {
     mouseBadge.textContent = p.tile ? `↖ ${p.tile.x}, ${p.tile.y}` : '';
   });
 
-  const name = `Player-${Math.floor(Math.random() * 1000)}`;
-  connect(name);
+  // No auto-connect: the connection gate shows the join form (name + world +
+  // "play from other computers") and calls connect() when the player submits.
 }

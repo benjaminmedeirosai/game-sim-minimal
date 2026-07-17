@@ -1,10 +1,15 @@
-// A full-screen gate shown over the app until we're connected to a host. While
-// connecting it's a quiet loader; if the host can't be reached it becomes a
-// proper landing page explaining what's wrong and how to start the server, with
-// a Retry button. Once connected it hides and the world takes over. This is the
-// first (and, on a static GitHub Pages deploy with no host up, only) thing a
-// visitor sees, so it doubles as the project's landing screen.
-import { net, reconnect } from '../net/client';
+// A full-screen gate shown over the app until we're in a live session. It has
+// four faces:
+//  - idle / rejected : the JOIN form (name, world, "play from other computers").
+//                      'rejected' adds the host's reason (name taken, etc.).
+//  - connecting      : a quiet loader while the handshake completes.
+//  - error           : the host is unreachable — a landing page explaining how to
+//                      start the server, with Retry.
+// Once connected it hides and the world takes over. This is the first (and, on a
+// static deploy with no host up, only) thing a visitor sees, so it doubles as
+// the project's landing screen.
+import { connect, net, reconnect } from '../net/client';
+import { savedAllowOthers, savedName } from '../state/identity';
 
 export function mountConnGate(el: HTMLElement): void {
   net.subscribe((s) => {
@@ -13,9 +18,32 @@ export function mountConnGate(el: HTMLElement): void {
       return;
     }
     el.hidden = false;
-    el.innerHTML = s.status === 'connecting' ? connecting() : offline(s.error);
-    const retry = el.querySelector<HTMLButtonElement>('#gate-retry');
-    retry?.addEventListener('click', () => reconnect());
+    if (s.status === 'connecting') el.innerHTML = connecting();
+    else if (s.status === 'error') el.innerHTML = offline(s.error);
+    else el.innerHTML = joinForm(s.status === 'rejected' ? s.error : undefined);
+
+    el.querySelector<HTMLButtonElement>('#gate-retry')?.addEventListener('click', () => reconnect());
+    wireJoinForm(el);
+  });
+}
+
+/** Wire the join form's submit → connect(name, allowOthers). No-op when the form
+ *  isn't the current face. */
+function wireJoinForm(el: HTMLElement): void {
+  const form = el.querySelector<HTMLFormElement>('#gate-join');
+  if (!form) return;
+  const input = form.querySelector<HTMLInputElement>('#gate-name')!;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = input.value.trim();
+    if (!name) {
+      input.focus();
+      return;
+    }
+    const allowOthers = form.querySelector<HTMLInputElement>('#gate-allow')!.checked;
+    connect(name, allowOthers);
   });
 }
 
@@ -36,11 +64,40 @@ function shell(inner: string): string {
     </div>`;
 }
 
+function joinForm(rejectedReason?: string): string {
+  const name = escapeHtml(savedName());
+  const allow = savedAllowOthers() ? 'checked' : '';
+  const banner = rejectedReason
+    ? `<p class="gate-reject">${escapeHtml(rejectedReason)}</p>`
+    : '';
+  return shell(`
+    ${banner}
+    <form class="gate-form" id="gate-join">
+      <label class="gate-label" for="gate-name">Your name</label>
+      <input class="gate-input" id="gate-name" type="text" maxlength="24" autocomplete="off"
+             spellcheck="false" placeholder="Pick a name" value="${name}" />
+
+      <label class="gate-label" for="gate-world">World</label>
+      <select class="gate-input" id="gate-world">
+        <option value="main" selected>Main colony</option>
+      </select>
+
+      <label class="gate-check">
+        <input type="checkbox" id="gate-allow" ${allow} />
+        <span>Allow my user to play from other computers
+          <small>Opens this name to a new device once — turn it off after you've added it.</small>
+        </span>
+      </label>
+
+      <button class="btn gate-join-btn" type="submit">Join the colony</button>
+    </form>`);
+}
+
 function connecting(): string {
   return shell(`
     <div class="gate-status">
       <span class="gate-spinner" aria-hidden="true"></span>
-      <span>Connecting to the colony…</span>
+      <span>Joining the colony…</span>
     </div>`);
 }
 
@@ -59,5 +116,7 @@ npm run dev</code></pre>
 }
 
 function escapeHtml(s: string): string {
-  return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
+  return s.replace(/[&<>"]/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;',
+  );
 }

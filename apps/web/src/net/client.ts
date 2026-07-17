@@ -21,15 +21,25 @@ import type {
 import { camera, game } from '../state/game';
 import { clampTilesAcross, currentView, refreshViewportInfo } from '../render/viewport';
 import { recordLatency, recordSnapshot } from '../state/clientPerf';
+import {
+  deviceToken,
+  saveAllowOthers,
+  saveCamera,
+  saveName,
+  savedCamera,
+} from '../state/identity';
+import type { CameraState } from '@game/shared';
 
 export interface NetState {
-  status: 'connecting' | 'connected' | 'error';
+  /** 'idle' = showing the join form, not yet connecting; 'error' = host
+   *  unreachable (retryable); 'rejected' = host refused the name (re-show form). */
+  status: 'idle' | 'connecting' | 'connected' | 'error' | 'rejected';
   me?: PeerInfo;
   roster: PeerInfo[];
   error?: string;
 }
 
-export const net = new Store<NetState>({ status: 'connecting', roster: [] });
+export const net = new Store<NetState>({ status: 'idle', roster: [] });
 
 // Recent attributed actions for the Actions panel; replaced every snapshot.
 export const actionLog = new Store<ActionRecord[]>([]);
@@ -60,6 +70,10 @@ export const aiEvents = new Store<{ agent: string; n: number }>({ agent: '', n: 
 let conn: DataConnection | undefined;
 let peer: Peer | undefined;
 let clientName = '';
+let clientAllowOthers = false;
+// The account's saved camera, sent by the host in `welcome`. Held until the
+// first snapshot so we can pick the newer of it vs. our local camera.
+let hostCamera: CameraState | undefined;
 let lastWorldId: string | undefined;
 let pingTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -91,6 +105,11 @@ function sendCamera(): void {
   if (key === lastCameraKey) return;
   lastCameraKey = key;
   send({ m: 'camera', cx, cy, w, h });
+  // Persist locally too (world-scoped + timestamped). Width in tiles IS the zoom
+  // (tilesAcross). The matching ts is how the host and this browser decide whose
+  // saved camera is newer on the next load.
+  const worldId = game.get().world?.id;
+  if (worldId) saveCamera({ worldId, cx, cy, tilesAcross: w, ts: Date.now() });
 }
 
 /** Trailing-debounced camera report: called on every camera change, actually
@@ -120,13 +139,19 @@ function stopPinging(): void {
 }
 
 /** Re-run the last connection attempt (used by the "Retry" button on the
- *  connection gate). No-op before the first connect(). */
+ *  connection gate when the host is unreachable). No-op before the first
+ *  connect(). */
 export function reconnect(): void {
-  if (clientName) connect(clientName);
+  if (clientName) connect(clientName, clientAllowOthers);
 }
 
-export function connect(name: string): void {
+/** Join as `name`. `allowOthers` opens this account's device-enrollment window
+ *  (see the protocol note). The device token is pulled from localStorage. */
+export function connect(name: string, allowOthers: boolean): void {
   clientName = name;
+  clientAllowOthers = allowOthers;
+  saveName(name);
+  saveAllowOthers(allowOthers);
   net.set({ status: 'connecting', error: undefined });
 
   // Tear down any peer from a previous (failed) attempt so retries start clean.
@@ -139,20 +164,28 @@ export function connect(name: string): void {
     conn = p.connect(ROOM_ID, { reliable: true });
 
     conn.on('open', () => {
-      const hello: ClientMsg = { m: 'hello', name, role: 'player' };
+      const hello: ClientMsg = {
+        m: 'hello',
+        name,
+        role: 'player',
+        deviceToken: deviceToken(),
+        allowOthers,
+      };
       conn!.send(hello);
-      net.set({ status: 'connected' });
-      // Pull the shared chat immediately so the sidebar has it without anyone
-      // opening the AI History window first.
-      sendAiHistoryReq(ORCHESTRATOR_AGENT);
-      startPinging(); // begin RTT latency probes
+      // NB: not "connected" yet — the host may reject the name. We flip to
+      // connected on `welcome`, or back to the form on `rejected`.
     });
 
     conn.on('data', (raw) => handleHostMsg(raw as HostMsg));
 
     conn.on('close', () => {
       stopPinging();
-      net.set({ status: 'error', error: 'Disconnected from host.' });
+      // Ignore closes that fire while we're tearing down for a fresh attempt
+      // (reconnect destroys the old peer); only a drop from a live session is a
+      // real disconnect. A `rejected` also leaves us off the connected state.
+      if (net.get().status === 'connected') {
+        net.set({ status: 'error', error: 'Disconnected from host.' });
+      }
     });
   });
 
@@ -169,7 +202,19 @@ export function connect(name: string): void {
 function handleHostMsg(msg: HostMsg): void {
   switch (msg.m) {
     case 'welcome':
-      net.set({ me: msg.you, roster: msg.roster });
+      // Accepted. NOW we're truly connected: stash the account's saved camera
+      // (used on the first snapshot), start the chat + latency probes.
+      hostCamera = msg.lastCamera;
+      net.set({ status: 'connected', me: msg.you, roster: msg.roster, error: undefined });
+      sendAiHistoryReq(ORCHESTRATOR_AGENT);
+      startPinging();
+      break;
+    case 'rejected':
+      // Host refused the name (taken by another device, invalid, or superseded).
+      // Drop back to the join form with the reason; do NOT auto-retry.
+      stopPinging();
+      peer?.destroy();
+      net.set({ status: 'rejected', error: msg.reason });
       break;
     case 'roster':
       net.set({ roster: msg.roster });
@@ -223,12 +268,32 @@ function handleHostMsg(msg: HostMsg): void {
 
 function onSnapshot(world: World): void {
   game.set({ world });
-  // Re-center the camera whenever a NEW world arrives (id changed), honoring
-  // the world's configured zoom. Ongoing snapshots of the same world leave the
-  // player's pan/zoom alone.
+  // On the FIRST snapshot of a world (id changed), restore the camera. Ongoing
+  // snapshots of the same world leave the player's pan/zoom alone.
   if (world.id !== lastWorldId) {
     lastWorldId = world.id;
     refreshViewportInfo(); // new world dims change the zoom cap
+    restoreCamera(world);
+  }
+}
+
+/** Pick the camera to open a world at: the newer (by timestamp) of this
+ *  browser's saved camera and the account's host-saved camera, provided it's for
+ *  THIS world; otherwise center on the world at its configured zoom. This makes
+ *  the local client authoritative when it's freshest, but lets a move made on
+ *  another device (newer on the host) win. */
+function restoreCamera(world: World): void {
+  const candidates = [savedCamera(), hostCamera].filter(
+    (c): c is CameraState => !!c && c.worldId === world.id,
+  );
+  const best = candidates.sort((a, b) => b.ts - a.ts)[0];
+  if (best) {
+    camera.set({
+      cx: Math.max(0, Math.min(world.width, best.cx)),
+      cy: Math.max(0, Math.min(world.height, best.cy)),
+      tilesAcross: clampTilesAcross(best.tilesAcross),
+    });
+  } else {
     camera.set({
       cx: world.width / 2,
       cy: world.height / 2,
