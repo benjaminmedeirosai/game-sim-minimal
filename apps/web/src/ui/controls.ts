@@ -281,11 +281,11 @@ const UNIT_ACTIONS: ActionDoc[] = [
 
 const CAMERA_ACTIONS: ActionDoc[] = [
   {
-    name: 'Move view',
+    name: 'Move camera',
     type: 'setView',
     args: 'center?, tilesAcross?',
     who: 'AI (players pan/zoom directly)',
-    desc: 'Pan and/or zoom the requesting player’s own camera. A view-only nudge (e.g. “show me unit-2”, “zoom out”) — it never changes the world or moves anyone else’s view.',
+    desc: 'Keyword `camera`. Pan and/or zoom the requesting player’s own view (e.g. “show me unit2”, “zoom out”) — it changes only what that player sees, never the world, and is not a way to move, patrol, or scout a unit.',
   },
 ];
 

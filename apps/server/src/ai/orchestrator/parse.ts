@@ -291,9 +291,10 @@ function reject(acc: Acc, reason: string): true {
 
 // --- Line format (the primary shape) ------------------------------------
 
-/** Parse ONE `view ...` command's tokens: a pure-integer token is tilesAcross,
- *  anything else is the center cell. At least one must be valid. */
-function parseView(tokens: string[], world: World, acc: Acc): void {
+/** Parse ONE `camera ...` command's tokens (keyword `camera`, legacy alias
+ *  `view`): a pure-integer token is tilesAcross, anything else is the center
+ *  cell. At least one must be valid. Camera-only — moves nothing in the world. */
+function parseCamera(tokens: string[], world: World, acc: Acc): void {
   const cmd: ViewCommand = { type: 'setView' };
   for (const t of tokens) {
     if (/^\d+$/.test(t)) {
@@ -303,13 +304,13 @@ function parseView(tokens: string[], world: World, acc: Acc): void {
       const c = coerceCoord(t, world);
       if (c) cmd.center = c;
       else {
-        reject(acc, `view: center ${t} out of bounds`);
+        reject(acc, `camera: center ${t} out of bounds`);
         return;
       }
     }
   }
   if (cmd.center === undefined && cmd.tilesAcross === undefined) {
-    reject(acc, 'view: neither a cell nor a zoom given');
+    reject(acc, 'camera: neither a cell nor a zoom given');
     return;
   }
   acc.viewCommands.push(cmd);
@@ -442,8 +443,9 @@ function parseLine(verb: string, args: string[], rest: string, world: World, acc
       acc.actions.push({ type: 'cancel', unitId: id });
       break;
     }
-    case 'view':
-      parseView(args, world, acc);
+    case 'camera':
+    case 'view': // legacy alias for camera
+      parseCamera(args, world, acc);
       break;
     case 'mem':
     case 'memory':
