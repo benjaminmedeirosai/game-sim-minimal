@@ -150,8 +150,8 @@ function rolePrompt(): string {
     'need — often just an action line or two, sometimes a single msg. Emitting NO',
     'lines is a valid "nothing to do". Example response:',
     '  msg Sending two over for wood!',
-    '  harvest unit-0 AF29',
-    '  harvest unit-1 AB16',
+    '  harvest unit0 AF29',
+    '  harvest unit1 AB16',
     '',
     '  - msg: the rest of the line is the reply, spoken in the colony\'s voice when a',
     '    "Voice" section is given below (otherwise plain and direct). Include ONE',
@@ -223,7 +223,7 @@ function actionsPrompt(): string {
     'space-separated arguments. They fall into two groups.',
     '',
     'Unit control — commands to a single unit. <id> is the EXACT unitId from the',
-    'world snapshot below (e.g. unit-0), NOT a bare number like 0. Every <cell> is a',
+    'world snapshot below (e.g. unit0), NOT a bare number like 0. Every <cell> is a',
     'coordinate like AF29 (see Coordinates below). [square] args are OPTIONAL:',
     '  move <id> <cell>                       walk to a tile (reposition/scout only)',
     '  harvest <id> <cell|area> [types...]    chop/mine/gather — a tile, or nearest in an AREA',
@@ -235,18 +235,18 @@ function actionsPrompt(): string {
     '  cancel <id>                            stop the unit\'s current job',
     '',
     '  - On drop / dropnearby / pickup, omit [item] to move the WHOLE bag; give an',
-    '    item id (e.g. wood) and optionally a count to move just some — "drop unit-0',
-    '    AB16 wood 10" drops 10 wood, "drop unit-0 AB16" unloads everything.',
+    '    item id (e.g. wood) and optionally a count to move just some — "drop unit0',
+    '    AB16 wood 10" drops 10 wood, "drop unit0 AB16" unloads everything.',
     '  - Targeted actions AUTO-WALK to their tile: harvest, build, drop, and pickup',
     '    (including depositing/withdrawing at a depot) each send the unit to the',
     '    target on their own, so do NOT emit a separate move before them. To chop a',
-    '    tree at AB16, send just "harvest unit-1 AB16" — not a move to AB16 followed',
+    '    tree at AB16, send just "harvest unit1 AB16" — not a move to AB16 followed',
     '    by a harvest. Use move ONLY to reposition or scout to a tile you take no',
     '    other action on.',
     '  - A unit that is chopping, mining, crafting, or building is BUSY: it ignores',
     '    every command except cancel until the job finishes. Only idle or',
     '    plain-moving units accept a new task. Use cancel to stop a busy unit\'s',
-    '    current job (e.g. a player says "stop unit-2" or you need to redirect it);',
+    '    current job (e.g. a player says "stop unit2" or you need to redirect it);',
     '    crafting inputs are refunded. cancel on an idle unit does nothing.',
     '  - harvest works the object on the target tile; the verb is inferred from',
     '    what is there: a "fruit tree" is GATHERED for fruit (food) and stays',
@@ -257,9 +257,9 @@ function actionsPrompt(): string {
     '    unit to the CLOSEST match to it inside that box, so you can aim a unit at a',
     '    general region instead of naming an exact tile (and never have to work out',
     '    which tile is nearest — the code does). For harvest you may add resource',
-    '    types after the area to filter: "harvest unit-0 AU20:AZ28 tree ore" takes',
+    '    types after the area to filter: "harvest unit0 AU20:AZ28 tree ore" takes',
     '    the nearest tree OR ore in the box; with no type it takes the nearest',
-    '    harvestable object. "pickup unit-0 AU20:AZ28 wood" grabs the nearest wood',
+    '    harvestable object. "pickup unit0 AU20:AZ28 wood" grabs the nearest wood',
     '    pile in the box. This is the PREFERRED way to assign gathering.',
     '  - Bags have a weight limit (see "cap"/"load"/"enc%" on each unit line). A',
     '    heavy bag slows the unit; a FULL unit that keeps harvesting spills the',
@@ -285,7 +285,7 @@ function actionsPrompt(): string {
     'and ONLY that player. It never changes the world and never moves anyone else:',
     '  view <cell> <tilesAcross>           pan and/or zoom this player\'s camera',
     '',
-    '  - Use it when a player asks to SEE something — "show me unit-2", "look at',
+    '  - Use it when a player asks to SEE something — "show me unit2", "look at',
     '    the lake", "zoom out". The <cell> pans that player\'s view to that tile;',
     '    <tilesAcross> sets the zoom = how many tiles wide to show (smaller = zoomed',
     '    in closer, larger = more of the map). Give either or both — "view AF29"',
@@ -347,6 +347,14 @@ export function systemPrompt(): string {
 }
 
 // --- Dynamic tail --------------------------------------------------------
+
+/** How a unit id is shown to the model: dash-free ("unit-3" → "unit3"), which
+ *  saves a token per mention. The parser accepts either form (it reads the
+ *  trailing digits), and every INTERNAL id keeps its canonical "unit-3" shape —
+ *  this is purely how ids are rendered into the prompt. */
+function promptId(id: string): string {
+  return id.replace(/^unit-/, 'unit');
+}
 
 /** A job's completion as a percentage, from ticks remaining vs. the starting
  *  total (falls back to 0% if an older save's job lacks a total). */
@@ -414,10 +422,10 @@ export function worldContext(world: World): string {
     const invStr = inv.length ? inv.join(', ') : 'none';
     const toolsStr = u.tools.length ? u.tools.join(', ') : 'none';
 
-    return `  ${u.id} @${toCell(u.pos)} ${status} | ${stats} | inv ${invStr} | tools ${toolsStr}`;
+    return `  ${promptId(u.id)} @${toCell(u.pos)} ${status} | ${stats} | inv ${invStr} | tools ${toolsStr}`;
   });
 
-  const idleIds = Object.values(world.units).filter(isIdle).map((u) => u.id);
+  const idleIds = Object.values(world.units).filter(isIdle).map((u) => promptId(u.id));
 
   const resources = Object.keys(cells).map((k) => {
     const list = cells[k]!;

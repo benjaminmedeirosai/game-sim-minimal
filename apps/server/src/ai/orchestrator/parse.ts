@@ -3,9 +3,12 @@
 // first — because it roughly halves output tokens vs. the old JSON object:
 //
 //   msg Getting another tree down for wood!
-//   move unit-1 AF29
-//   harvest unit-1 AB16
-//   harvest unit-2 AU20:AZ28 tree     (an AREA — nearest tree in the box)
+//   move unit1 AF29
+//   harvest unit1 AB16
+//   harvest unit2 AU20:AZ28 tree     (an AREA — nearest tree in the box)
+//
+// Ids are shown to the model dash-free ("unit3") to save a token; the parser
+// accepts "unit3", "unit-3", or a bare "3" (see resolveUnitId).
 //
 // We parse line by line and validate every command against the real world (unit
 // exists, coords in-bounds, known recipe/building); anything that fails is
