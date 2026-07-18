@@ -439,7 +439,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .ai-raw summary { cursor: pointer; font-size: 11px; color: var(--accent); }
 .ai-raw pre {
   margin: 6px 0 0; padding: 10px; background: #0a0c11; border: 1px solid var(--border);
-  border-radius: 8px; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  border-radius: 8px; font-size: 11px; overflow-x: auto; white-space: pre;
 }
 
 /* config tab */
@@ -577,7 +577,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .ai-kv-live { color: var(--muted); border-color: var(--border); }
 .ai-part pre, .ai-cfg-raw {
   margin: 0; padding: 12px; background: #0a0c11; border: 1px solid var(--border);
-  border-radius: 8px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  border-radius: 8px; font-size: 12px; overflow-x: auto; white-space: pre;
 }
 
 /* memory tab */
