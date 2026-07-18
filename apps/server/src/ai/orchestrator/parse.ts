@@ -5,6 +5,7 @@
 //   msg Getting another tree down for wood!
 //   move unit-1 AF29
 //   harvest unit-1 AB16
+//   harvest unit-2 AU20:AZ28 tree     (an AREA — nearest tree in the box)
 //
 // We parse line by line and validate every command against the real world (unit
 // exists, coords in-bounds, known recipe/building); anything that fails is
@@ -12,8 +13,8 @@
 // garbage here keeps the audit log honest about what we actually tried to run.
 // A JSON object/array is still accepted as a fallback so a model that reverts to
 // the old shape (or an older saved exchange) doesn't break.
-import { BUILDINGS, RECIPES, parseCell, toCell } from '@game/shared';
-import type { Action, Coord, MemoryOp, ViewCommand, World } from '@game/shared';
+import { BUILDINGS, RECIPES, parseCell, parseCellRange, toCell } from '@game/shared';
+import type { Action, CellRange, Coord, MemoryOp, ViewCommand, World } from '@game/shared';
 import { MEMORY_MAX_LEN } from './memory.js';
 
 /** Coerce a model-supplied coordinate to an in-bounds Coord, or null. The line
@@ -89,6 +90,92 @@ function itemQtyTail(tokens: string[]): { item?: string; qty?: number } {
     }
   }
   return { item, qty };
+}
+
+// --- Areas (cell OR range targets) --------------------------------------
+
+/** True if a target token is an AREA (a range, "AU20:AZ28") rather than a single
+ *  cell. Only ranges get resolved to a nearest match; a bare cell is passed
+ *  through as-is (so exact-tile and depot semantics are untouched). */
+function isRangeToken(t: string | undefined): boolean {
+  return typeof t === 'string' && t.includes(':');
+}
+
+/** Parse + clamp an area token to the world. Returns the in-bounds rectangle, or
+ *  null if the token isn't a valid range or the box lies entirely off the map. */
+function coerceRange(token: string, world: World): CellRange | null {
+  const r = parseCellRange(token);
+  if (!r) return null;
+  // Reject a box that doesn't intersect the world at all (else clamping would
+  // collapse it onto an edge cell and invent a bogus match).
+  if (r.max.x < 0 || r.max.y < 0 || r.min.x >= world.width || r.min.y >= world.height) return null;
+  const clamp = (c: Coord): Coord => ({
+    x: Math.max(0, Math.min(world.width - 1, c.x)),
+    y: Math.max(0, Math.min(world.height - 1, c.y)),
+  });
+  return { min: clamp(r.min), max: clamp(r.max) };
+}
+
+const manhattan = (a: Coord, b: Coord): number => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+
+/** Which harvest category an object belongs to (for the optional type filter on
+ *  `harvest <id> <range> [types...]`). A fruit tree is its own category (gathered
+ *  for food) vs. a plain tree (chopped for wood). Non-harvestable → null. */
+function harvestCategory(obj: { kind: string; hasFruit?: boolean }): 'tree' | 'fruit' | 'rock' | 'ore' | null {
+  if (obj.kind === 'tree') return obj.hasFruit ? 'fruit' : 'tree';
+  if (obj.kind === 'rock') return 'rock';
+  if (obj.kind === 'ore') return 'ore';
+  return null;
+}
+
+/** Map a model-supplied type word to a harvest category. Tolerant of the obvious
+ *  synonyms so "wood"/"stone"/"metal" work as well as the kind names. */
+const HARVEST_TYPE_ALIASES: Record<string, 'tree' | 'fruit' | 'rock' | 'ore'> = {
+  tree: 'tree', wood: 'tree', log: 'tree', logs: 'tree',
+  fruit: 'fruit', food: 'fruit', fruittree: 'fruit',
+  rock: 'rock', stone: 'rock', rocks: 'rock',
+  ore: 'ore', metal: 'ore', iron: 'ore', copper: 'ore', gold: 'ore',
+};
+
+/** Nearest harvestable object to `from` within `range`, optionally filtered to
+ *  the given type words. Empty/unknown filter = any harvestable object. Null if
+ *  the box holds nothing matching. */
+function nearestHarvestable(world: World, from: Coord, range: CellRange, typeTokens: string[]): Coord | null {
+  const wanted = new Set<string>();
+  for (const t of typeTokens) {
+    const cat = HARVEST_TYPE_ALIASES[t.toLowerCase()];
+    if (cat) wanted.add(cat);
+  }
+  let best: { cell: Coord; d: number } | undefined;
+  for (let y = range.min.y; y <= range.max.y; y++) {
+    for (let x = range.min.x; x <= range.max.x; x++) {
+      const obj = world.tiles[y * world.width + x]?.object;
+      if (!obj) continue;
+      const cat = harvestCategory(obj);
+      if (!cat || (wanted.size && !wanted.has(cat))) continue;
+      const d = manhattan(from, { x, y });
+      if (!best || d < best.d) best = { cell: { x, y }, d };
+    }
+  }
+  return best?.cell ?? null;
+}
+
+/** Nearest loose ground pile to `from` within `range`, optionally requiring a
+ *  specific item. Null if the box holds no matching pile. (Depots are addressed
+ *  by their own known cell, so ranges resolve to ground piles only.) */
+function nearestPile(world: World, from: Coord, range: CellRange, item: string | undefined): Coord | null {
+  let best: { cell: Coord; d: number } | undefined;
+  for (let y = range.min.y; y <= range.max.y; y++) {
+    for (let x = range.min.x; x <= range.max.x; x++) {
+      const items = world.tiles[y * world.width + x]?.items;
+      if (!items) continue;
+      const has = item ? (items[item] ?? 0) > 0 : Object.values(items).some((n) => n > 0);
+      if (!has) continue;
+      const d = manhattan(from, { x, y });
+      if (!best || d < best.d) best = { cell: { x, y }, d };
+    }
+  }
+  return best?.cell ?? null;
 }
 
 // --- JSON fallback (legacy shape) ---------------------------------------
@@ -271,6 +358,16 @@ function parseLine(verb: string, args: string[], rest: string, world: World, acc
     case 'harvest': {
       const id = unit();
       if (!id) return reject(acc, `harvest: unknown unit ${args[0] ?? '(none)'}`);
+      // An AREA (range) resolves to the nearest matching resource to the unit,
+      // optionally filtered by trailing type words; a bare cell is worked as-is.
+      if (isRangeToken(args[1])) {
+        const range = coerceRange(args[1], world);
+        if (!range) return reject(acc, `harvest: bad area ${args[1]}`);
+        const target = nearestHarvestable(world, world.units[id]!.pos, range, args.slice(2));
+        if (!target) return reject(acc, `harvest: no matching resource in ${args[1]}`);
+        acc.actions.push({ type: 'harvest', unitId: id, target });
+        break;
+      }
       const target = coerceCoord(args[1], world);
       if (!target) return reject(acc, `harvest: bad cell ${args[1] ?? '(none)'}`);
       acc.actions.push({ type: 'harvest', unitId: id, target });
@@ -313,10 +410,21 @@ function parseLine(verb: string, args: string[], rest: string, world: World, acc
     case 'pickup': {
       const id = unit();
       if (!id) return reject(acc, `pickup: unknown unit ${args[0] ?? '(none)'}`);
+      const { item, qty } = itemQtyTail(args.slice(2));
+      const tail = { ...(item ? { item } : {}), ...(qty ? { qty } : {}) };
+      // An AREA (range) resolves to the nearest loose pile (matching item, if
+      // given) to the unit; a bare cell keeps exact ground/depot semantics.
+      if (isRangeToken(args[1])) {
+        const range = coerceRange(args[1], world);
+        if (!range) return reject(acc, `pickup: bad area ${args[1]}`);
+        const at = nearestPile(world, world.units[id]!.pos, range, item);
+        if (!at) return reject(acc, `pickup: no loose items in ${args[1]}`);
+        acc.actions.push({ type: 'pickup', unitId: id, at, ...tail });
+        break;
+      }
       const at = coerceCoord(args[1], world);
       if (!at) return reject(acc, `pickup: bad cell ${args[1] ?? '(none)'}`);
-      const { item, qty } = itemQtyTail(args.slice(2));
-      acc.actions.push({ type: 'pickup', unitId: id, at, ...(item ? { item } : {}), ...(qty ? { qty } : {}) });
+      acc.actions.push({ type: 'pickup', unitId: id, at, ...tail });
       break;
     }
     case 'cancel': {

@@ -193,10 +193,16 @@ function rolePrompt(): string {
     '  - Use only unit ids that exist in the world snapshot.',
     '  - Mining ore REQUIRES a pickaxe — craft one first if no unit has it.',
     '  - Coordinates must be inside the world bounds.',
-    '  - Each idle unit line lists its NEAREST target of each kind ("nearest →").',
-    '    Assign a unit to its own nearest suitable target so units do not cross',
-    '    the map when a closer one exists. Spread units across different targets',
-    '    rather than sending several to the same tile.',
+    '  - To send a unit gathering, prefer handing it an AREA (a cell range like',
+    '    "AU20:AZ28") rather than an exact tile: the sim routes it to the CLOSEST',
+    '    matching resource in that box, so you never have to compute "nearest"',
+    '    yourself. Give each unit an area near ITS position, and spread units across',
+    '    different areas rather than sending several to the same tile.',
+    '  - Watch each unit\'s bag. "enc" is how full it is by weight; a unit at or near',
+    '    FULL (enc ≳ 80%) should be sent to DROP or DEPOSIT (at a depot) before you',
+    '    give it more to harvest — a FULL unit cannot carry more and its extra',
+    '    harvest spills onto the ground (wasted effort). When picking who gathers,',
+    '    prefer the units with the EMPTIEST bags.',
     '  - Only ONE unit can work a given resource/target at a time, so never assign',
     '    two units to the same tile. When a player asks for resources ("get wood",',
     '    "gather stone"), typically dispatch SEVERAL idle units in parallel — each to',
@@ -219,14 +225,14 @@ function actionsPrompt(): string {
     'Unit control — commands to a single unit. <id> is the EXACT unitId from the',
     'world snapshot below (e.g. unit-0), NOT a bare number like 0. Every <cell> is a',
     'coordinate like AF29 (see Coordinates below). [square] args are OPTIONAL:',
-    '  move <id> <cell>                    walk to a tile (reposition/scout only)',
-    '  harvest <id> <cell>                 chop / mine / gather the object there',
-    '  craft <id> <recipe>                 turn carried items into a tool',
-    '  build <id> <building> <cell>        raise a building on a tile',
-    '  drop <id> <cell> [item] [qty]       carry items to a tile and set them down',
-    '  dropnearby <id> [item] [qty]        drop items at the unit\'s feet (no walking)',
-    '  pickup <id> <cell> [item] [qty]     collect items from a tile into the bag',
-    '  cancel <id>                         stop the unit\'s current job',
+    '  move <id> <cell>                       walk to a tile (reposition/scout only)',
+    '  harvest <id> <cell|area> [types...]    chop/mine/gather — a tile, or nearest in an AREA',
+    '  craft <id> <recipe>                    turn carried items into a tool',
+    '  build <id> <building> <cell>           raise a building on a tile',
+    '  drop <id> <cell> [item] [qty]          carry items to a tile and set them down',
+    '  dropnearby <id> [item] [qty]           drop items at the unit\'s feet (no walking)',
+    '  pickup <id> <cell|area> [item] [qty]   collect items from a tile, or nearest pile in an AREA',
+    '  cancel <id>                            stop the unit\'s current job',
     '',
     '  - On drop / dropnearby / pickup, omit [item] to move the WHOLE bag; give an',
     '    item id (e.g. wood) and optionally a count to move just some — "drop unit-0',
@@ -246,6 +252,15 @@ function actionsPrompt(): string {
     '    what is there: a "fruit tree" is GATHERED for fruit (food) and stays',
     '    standing; a plain "tree" is CHOPPED for wood (removed); rock and ore are',
     '    MINED. So harvest a fruit tree for food, a plain tree for wood.',
+    '  - AREAS: harvest and pickup accept a cell RANGE — two corner cells joined by',
+    '    a colon, "AU20:AZ28" — in place of a single cell. The sim then sends the',
+    '    unit to the CLOSEST match to it inside that box, so you can aim a unit at a',
+    '    general region instead of naming an exact tile (and never have to work out',
+    '    which tile is nearest — the code does). For harvest you may add resource',
+    '    types after the area to filter: "harvest unit-0 AU20:AZ28 tree ore" takes',
+    '    the nearest tree OR ore in the box; with no type it takes the nearest',
+    '    harvestable object. "pickup unit-0 AU20:AZ28 wood" grabs the nearest wood',
+    '    pile in the box. This is the PREFERRED way to assign gathering.',
     '  - Bags have a weight limit (see "cap"/"load"/"enc%" on each unit line). A',
     '    heavy bag slows the unit; a FULL unit that keeps harvesting spills the',
     '    overflow onto the ground as a loose pile (harvesting never stalls). Loose',
@@ -289,6 +304,9 @@ function actionsPrompt(): string {
     '    things relative to what they see the same way.',
     '  - Emit every coordinate EXACTLY in this cell form (e.g. AF29) — never as',
     '    x/y numbers, and never a bare row or column on its own.',
+    '  - An AREA is two such cells joined by a colon, "AU20:AZ28" (any two opposite',
+    '    corners) — accepted only where "<cell|area>" is shown above (harvest,',
+    '    pickup).',
   ].join('\n');
 }
 
@@ -330,18 +348,6 @@ export function systemPrompt(): string {
 
 // --- Dynamic tail --------------------------------------------------------
 
-/** The closest cell to `from` by Manhattan distance (a good proxy — movement is
- *  4-connected; the sim does the real fog-aware routing). Undefined for an empty
- *  list. */
-function nearestCell(from: Coord, cells: Coord[]): { cell: Coord; dist: number } | undefined {
-  let best: { cell: Coord; dist: number } | undefined;
-  for (const cell of cells) {
-    const dist = Math.abs(cell.x - from.x) + Math.abs(cell.y - from.y);
-    if (!best || dist < best.dist) best = { cell, dist };
-  }
-  return best;
-}
-
 /** A job's completion as a percentage, from ticks remaining vs. the starting
  *  total (falls back to 0% if an older save's job lacks a total). */
 function jobProgress(remaining: number, total?: number): string {
@@ -378,49 +384,37 @@ export function worldContext(world: World): string {
   const isIdle = (u: (typeof world.units)[string]): boolean =>
     !u.job && !u.craftJob && !u.buildJob;
 
-  // One compact JSON object per unit. Rendering ids as `"id":"unit-0"` (rather
-  // than in prose) removes the ambiguity that had the model emitting a bare "0";
-  // positions are cell strings ("AF29"), exactly the form actions must send back.
+  // One compact DSL line per unit (cheaper than JSON — no braces/quotes):
+  //   id @cell status | hp cur/max arm N bag load/cap enc P%[ FULL] spd S | inv … | tools …
+  // Positions are cell strings ("AF29"), exactly the form actions must send back.
+  // The model no longer gets a precomputed "nearest" per unit: it can hand a unit
+  // an AREA (range) and the sim routes it to the closest matching resource.
   const units = Object.values(world.units).map((u) => {
-    // Compact stats: hp/maxHp, armor, bag load/capacity, encumbrance %, and the
-    // current effective speed (tiles/s) after that encumbrance. A heavy bag both
-    // slows the unit and (at 100%) stops it picking up more — the model should
-    // weigh that when routing harvesters.
+    // status: idle, a job verb + its target cell ("chop AV18"), or craft/build
+    // with a completion %.
+    let status = 'idle';
+    if (u.job) status = `${u.job.verb} ${toCell(u.job.target)}`;
+    else if (u.craftJob) status = `craft ${u.craftJob.recipe} ${jobProgress(u.craftJob.remaining, u.craftJob.total)}`;
+    else if (u.buildJob) status = `build ${u.buildJob.building} ${jobProgress(u.buildJob.remaining, u.buildJob.total)}`;
+
+    // Stats: hp/maxHp, armor, bag load/capacity, encumbrance %, effective speed
+    // (tiles/s after that load). A FULL bag (enc ≥ 100%) both stops the unit
+    // picking up more AND spills any further harvest to the ground — flag it
+    // loudly so the model reroutes the unit to drop/deposit first.
     const load = Math.round(unitLoad(u) * 10) / 10;
-    const obj: Record<string, unknown> = {
-      id: u.id,
-      pos: toCell(u.pos),
-      inv: u.inventory,
-      tools: u.tools,
-      hp: `${Math.round(u.hp ?? 100)}/${Math.round(u.maxHp ?? 100)}`,
-      armor: u.armor ?? 0,
-      bag: `${load}/${unitCapacity(u)}`,
-      enc: `${Math.round(encumbrance(u) * 100)}%`,
-      spd: Math.round(effectiveSpeed(u) * 100) / 100,
-    };
-    if (u.job) {
-      obj.status = u.job.verb;
-      obj.at = toCell(u.job.target);
-    } else if (u.craftJob) {
-      obj.status = `craft ${u.craftJob.recipe}`;
-      obj.progress = jobProgress(u.craftJob.remaining, u.craftJob.total);
-    } else if (u.buildJob) {
-      obj.status = `build ${u.buildJob.building}`;
-      obj.progress = jobProgress(u.buildJob.remaining, u.buildJob.total);
-    } else {
-      obj.status = 'idle';
-      // Hand each idle unit its nearest target of each kind (Manhattan distance —
-      // movement is 4-connected). Models pick "nearest" badly from a raw coord
-      // list, so we precompute it; this is what stops a unit crossing the map to
-      // a far tree when a closer one exists.
-      const nearest: Record<string, { at: string; d: number }> = {};
-      for (const [kind, list] of Object.entries(cells)) {
-        const near = nearestCell(u.pos, list);
-        if (near) nearest[kind] = { at: toCell(near.cell), d: near.dist };
-      }
-      if (Object.keys(nearest).length) obj.nearest = nearest;
-    }
-    return `  ${JSON.stringify(obj)}`;
+    const enc = Math.round(encumbrance(u) * 100);
+    const stats =
+      `hp ${Math.round(u.hp ?? 100)}/${Math.round(u.maxHp ?? 100)} arm ${u.armor ?? 0} ` +
+      `bag ${load}/${unitCapacity(u)} enc ${enc}%${enc >= 100 ? ' FULL' : ''} ` +
+      `spd ${Math.round(effectiveSpeed(u) * 100) / 100}`;
+
+    const inv = Object.entries(u.inventory)
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${k} ${n}`);
+    const invStr = inv.length ? inv.join(', ') : 'none';
+    const toolsStr = u.tools.length ? u.tools.join(', ') : 'none';
+
+    return `  ${u.id} @${toCell(u.pos)} ${status} | ${stats} | inv ${invStr} | tools ${toolsStr}`;
   });
 
   const idleIds = Object.values(world.units).filter(isIdle).map((u) => u.id);
@@ -478,9 +472,13 @@ export function worldContext(world: World): string {
   // Omitting it lets a stationary-world follow-up reuse the cache in full.
   return [
     `World ${world.width}x${world.height}.`,
-    'Units (one compact JSON object per line; positions are cells like "AF29".',
-    '"nearest" gives each idle unit its closest target of each kind as {at,d} where',
-    'at is the cell and d is the tile distance):',
+    'Units — one per line, format:',
+    '  id @cell status | hp cur/max arm N bag load/cap enc P%[ FULL] spd S | inv <item n, …> | tools <…>',
+    'status is "idle", a job verb + its target cell ("chop AV18"), or "craft/build',
+    '<what> <%done>". enc is how full the bag is by weight; FULL (enc ≥ 100%) means',
+    'the unit CANNOT carry more — further harvest spills to the ground. spd is',
+    'tiles/sec after that load. To gather, hand a unit an AREA (range) and it works',
+    'the closest matching resource (see Actions) — no need to pick the exact tile.',
     ...units,
     `Idle units, free to assign right now: ${idleIds.length ? idleIds.join(', ') : 'none'}.`,
     'Resources your units can currently see (fog of war hides the rest):',

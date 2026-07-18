@@ -34,6 +34,33 @@ export function toCellXY(x: number, y: number): string {
   return columnLabel(x) + (Math.max(0, Math.floor(y)) + 1);
 }
 
+/** A rectangular block of tiles, as an inclusive min/max corner pair (already
+ *  normalized so min ≤ max on both axes). A single cell is just min === max. */
+export interface CellRange {
+  min: Coord;
+  max: Coord;
+}
+
+/** Parse an AREA in the cell language: either one cell ("AU20" → a 1×1 range) or
+ *  two corner cells joined by a colon ("AU20:AZ28"), in any corner order. Returns
+ *  the normalized min/max corners, or null if either half isn't a cell. Does NOT
+ *  bounds-check against a world — the caller clamps/intersects itself. */
+export function parseCellRange(s: string): CellRange | null {
+  const parts = s.split(':');
+  if (parts.length === 1) {
+    const c = parseCell(parts[0]);
+    return c ? { min: c, max: { ...c } } : null;
+  }
+  if (parts.length !== 2) return null;
+  const a = parseCell(parts[0]);
+  const b = parseCell(parts[1]);
+  if (!a || !b) return null;
+  return {
+    min: { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y) },
+    max: { x: Math.max(a.x, b.x), y: Math.max(a.y, b.y) },
+  };
+}
+
 const CELL_RE = /^\s*([A-Za-z]+)\s*(\d+)\s*$/;
 
 /** Parse a cell like "AF29" (case-insensitive, tolerant of surrounding space)

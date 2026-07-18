@@ -233,7 +233,7 @@ const UNIT_ACTIONS: ActionDoc[] = [
     type: 'harvest',
     args: 'unitId, target',
     who: 'Player + AI',
-    desc: 'Work the object on the target tile — chop a tree for wood, gather a fruit tree for food, or mine rock/ore. The verb is inferred from what is there; the unit walks over first. Only one unit can work a given tile at a time.',
+    desc: 'Work the object on the target tile — chop a tree for wood, gather a fruit tree for food, or mine rock/ore. The verb is inferred from what is there; the unit walks over first. Only one unit can work a given tile at a time. The AI may aim at an AREA (a cell range like AU20:AZ28, optionally filtered by resource type) and the closest matching resource to the unit is chosen.',
   },
   {
     name: 'Craft',
@@ -268,7 +268,7 @@ const UNIT_ACTIONS: ActionDoc[] = [
     type: 'pickup',
     args: 'unitId, at, item?, qty?',
     who: 'Player (at a pile/depot) + AI',
-    desc: 'Collect resources at a tile into the bag. From a storage depot this withdraws; from the ground it grabs a loose pile. Omit item to take all that fits under the carry limit.',
+    desc: 'Collect resources at a tile into the bag. From a storage depot this withdraws; from the ground it grabs a loose pile. Omit item to take all that fits under the carry limit. The AI may aim at an AREA (a cell range like AU20:AZ28) and the closest loose pile to the unit is chosen.',
   },
   {
     name: 'Cancel',
