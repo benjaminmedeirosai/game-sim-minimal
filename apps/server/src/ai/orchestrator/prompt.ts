@@ -385,7 +385,7 @@ export function worldContext(world: World): string {
     !u.job && !u.craftJob && !u.buildJob;
 
   // One compact DSL line per unit (cheaper than JSON — no braces/quotes):
-  //   id @cell status | hp cur/max arm N bag load/cap enc P%[ FULL] spd S | inv … | tools …
+  //   id @cell status | hp cur/max armor N bag load/cap enc P%[ FULL] spd S | inv … | tools …
   // Positions are cell strings ("AF29"), exactly the form actions must send back.
   // The model no longer gets a precomputed "nearest" per unit: it can hand a unit
   // an AREA (range) and the sim routes it to the closest matching resource.
@@ -404,7 +404,7 @@ export function worldContext(world: World): string {
     const load = Math.round(unitLoad(u) * 10) / 10;
     const enc = Math.round(encumbrance(u) * 100);
     const stats =
-      `hp ${Math.round(u.hp ?? 100)}/${Math.round(u.maxHp ?? 100)} arm ${u.armor ?? 0} ` +
+      `hp ${Math.round(u.hp ?? 100)}/${Math.round(u.maxHp ?? 100)} armor ${u.armor ?? 0} ` +
       `bag ${load}/${unitCapacity(u)} enc ${enc}%${enc >= 100 ? ' FULL' : ''} ` +
       `spd ${Math.round(effectiveSpeed(u) * 100) / 100}`;
 
@@ -426,19 +426,21 @@ export function worldContext(world: World): string {
   });
 
   // Loose resources dropped on the ground (overflow from full harvesters, or set
-  // down via drop), listed by cell so the model can send a unit to pick them up.
-  // Fogged like objects — only piles in current sight appear.
-  const piles: string[] = [];
+  // down via drop), grouped by item as "item: cell cell …" so the model can send
+  // a unit to pick them up (or hand it an area). We deliberately DROP the pile
+  // quantities — they're low-value for planning and cost tokens; the cells are
+  // what a pickup needs. Fogged like objects: only piles in current sight appear.
+  const pileCells: Record<string, string[]> = {};
   for (let y = 0; y < world.height; y++) {
     for (let x = 0; x < world.width; x++) {
       const items = world.tiles[y * world.width + x]?.items;
       if (!items) continue;
-      const parts = Object.entries(items)
-        .filter(([, n]) => n > 0)
-        .map(([k, n]) => `${n} ${k}`);
-      if (parts.length) piles.push(`  ${toCellXY(x, y)}: ${parts.join(', ')}`);
+      for (const [k, n] of Object.entries(items)) {
+        if (n > 0) (pileCells[k] ??= []).push(toCellXY(x, y));
+      }
     }
   }
+  const piles = Object.entries(pileCells).map(([k, cs]) => `  ${k}: ${cs.join(' ')}`);
 
   // Notable terrain in view. Terrain isn't fogged in the snapshot (only objects
   // are), so unlike the resource scan above we gate on visibleTiles() by hand —
@@ -456,13 +458,17 @@ export function worldContext(world: World): string {
     (k) => `  ${k}: ${terrainCells[k]!.length} tiles at ${terrainCells[k]!.join(' ')}`,
   );
 
-  // Buildings, with a storage depot's current contents inlined so the model
-  // knows what's stashed (and how full) before routing a deposit/withdraw.
-  const builds = Object.values(world.buildings).map((b) => {
+  // Buildings grouped by type as "type: cell cell …" to save tokens. A storage
+  // depot with a stash keeps its contents inline, attached to its own cell
+  // ("AF12 (20 wood, 5 stone)"), so the model still knows what's stored (and how
+  // full) before routing a deposit/withdraw; contentless buildings are just cells.
+  const buildCells: Record<string, string[]> = {};
+  for (const b of Object.values(world.buildings)) {
     const store = b.store && Object.entries(b.store).filter(([, n]) => n > 0);
-    const contents = store && store.length ? ` holds ${store.map(([k, n]) => `${n} ${k}`).join(', ')}` : '';
-    return `  ${b.type}@${toCell(b.pos)}${contents}`;
-  });
+    const contents = store && store.length ? ` (${store.map(([k, n]) => `${n} ${k}`).join(', ')})` : '';
+    (buildCells[b.type] ??= []).push(`${toCell(b.pos)}${contents}`);
+  }
+  const builds = Object.entries(buildCells).map(([type, cs]) => `  ${type}: ${cs.join(' ')}`);
 
   // NB: the world dimensions are constant, but we deliberately DROP the tick
   // counter here. It advances every tick (BASE_TPS/sec), so including it would
@@ -473,7 +479,7 @@ export function worldContext(world: World): string {
   return [
     `World ${world.width}x${world.height}.`,
     'Units — one per line, format:',
-    '  id @cell status | hp cur/max arm N bag load/cap enc P%[ FULL] spd S | inv <item n, …> | tools <…>',
+    '  id @cell status | hp cur/max armor N bag load/cap enc P%[ FULL] spd S | inv <item n, …> | tools <…>',
     'status is "idle", a job verb + its target cell ("chop AV18"), or "craft/build',
     '<what> <%done>". enc is how full the bag is by weight; FULL (enc ≥ 100%) means',
     'the unit CANNOT carry more — further harvest spills to the ground. spd is',
@@ -484,7 +490,7 @@ export function worldContext(world: World): string {
     'Resources your units can currently see (fog of war hides the rest):',
     ...resources,
     piles.length
-      ? 'Loose ground piles you can pick up (cell: items):'
+      ? 'Loose ground piles you can pick up (item: cells):'
       : 'Loose ground piles: none in sight',
     ...piles,
     'Notable terrain in view (all other visible ground is ordinary grass):',
