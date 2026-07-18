@@ -581,6 +581,12 @@ function refundInputs(unit: Unit, cost: Record<string, number>): void {
 }
 
 function stepUnit(world: World, unit: Unit): void {
+  // A unit is never made to stop or turn back for a full bag — a full harvester
+  // spills its yields (collectOrDrop) and keeps working. But if the bag ends up
+  // OVER capacity (e.g. an old save, or tools pushing it past the limit), shed
+  // the excess to the nearest ground right away so it doesn't crawl overloaded.
+  shedOverflow(world, unit);
+
   // Best-effort travel toward a clicked destination (fog-aware, may give up).
   if (unit.moveGoal) {
     stepTravel(world, unit);
@@ -754,6 +760,26 @@ function workObject(world: World, unit: Unit, tile: Tile, verb: 'chop' | 'mine' 
     collectOrDrop(world, unit, unit.pos, yieldsFor(obj));
     tile.object = undefined;
     unit.job = undefined;
+  }
+}
+
+/** If a unit is carrying MORE than its bag capacity, immediately set the excess
+ *  down on the nearest ground (via dropOnGround's spill) so it returns to within
+ *  capacity. Tools are equipment and never dropped; only loose resources shed.
+ *  A no-op for a unit at or under capacity, so this is cheap to call every tick. */
+function shedOverflow(world: World, unit: Unit): void {
+  let over = unitLoad(unit) - unitCapacity(unit);
+  if (over <= 0) return;
+  for (const key of Object.keys(unit.inventory)) {
+    if (over <= 0) break;
+    const have = unit.inventory[key] ?? 0;
+    const w = itemWeight(key);
+    if (have <= 0 || w <= 0) continue;
+    const shed = Math.min(have, Math.ceil(over / w));
+    unit.inventory[key] = have - shed;
+    if (unit.inventory[key]! <= 0) delete unit.inventory[key];
+    dropOnGround(world, unit.pos, key, shed);
+    over -= shed * w;
   }
 }
 
