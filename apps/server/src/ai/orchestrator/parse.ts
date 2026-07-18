@@ -1,31 +1,25 @@
 // Turn a model's text response into validated Actions (and an optional reply).
-// The model is asked for a JSON object {actions, msg}, but we stay defensive:
-// strip code fences, and accept either that object OR a bare actions array.
-// Every action is validated against the real world (unit exists, coords
-// in-bounds, known recipe/building); anything that fails is dropped —
-// applyAction is the final authority, but rejecting garbage here keeps the
-// audit log honest about what we actually tried to run.
+// The model is asked for a compact LINE format — one command per line, keyword
+// first — because it roughly halves output tokens vs. the old JSON object:
+//
+//   msg Getting another tree down for wood!
+//   move unit-1 AF29
+//   harvest unit-1 AB16
+//
+// We parse line by line and validate every command against the real world (unit
+// exists, coords in-bounds, known recipe/building); anything that fails is
+// dropped with a reason. applyAction is the final authority, but rejecting
+// garbage here keeps the audit log honest about what we actually tried to run.
+// A JSON object/array is still accepted as a fallback so a model that reverts to
+// the old shape (or an older saved exchange) doesn't break.
 import { BUILDINGS, RECIPES, parseCell, toCell } from '@game/shared';
 import type { Action, Coord, MemoryOp, ViewCommand, World } from '@game/shared';
 import { MEMORY_MAX_LEN } from './memory.js';
 
-/** Slice out the first balanced-looking JSON value of a given bracket type and
- *  parse it. Returns the parsed value, or null if none parses. */
-function sliceJson(cleaned: string, open: string, close: string): unknown {
-  const start = cleaned.indexOf(open);
-  const end = cleaned.lastIndexOf(close);
-  if (start === -1 || end === -1 || end < start) return null;
-  try {
-    return JSON.parse(cleaned.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-}
-
-/** Coerce a model-supplied coordinate to an in-bounds Coord, or null. The prompt
- *  asks for a cell string ("AF29"), so that's the primary form; we also still
- *  accept the legacy {x,y} object so a transitional/confused response doesn't
- *  break. Bounds are checked against the real world here. */
+/** Coerce a model-supplied coordinate to an in-bounds Coord, or null. The line
+ *  format sends a cell string ("AF29"); we also still accept a legacy {x,y}
+ *  object (JSON fallback path) so a transitional response doesn't break. Bounds
+ *  are checked against the real world here. */
 function coerceCoord(v: unknown, world: World): Coord | null {
   let c: Coord | null = null;
   if (typeof v === 'string') {
@@ -54,18 +48,18 @@ function coordStr(v: unknown): string {
 }
 
 /** Resolve a model-supplied unitId to a real unit id, tolerating the common
- *  slip where the model drops the "unit-" prefix and sends the bare index (as a
- *  number or a numeric string). Unit ids are generated as `unit-${n}` (see
- *  sim.ts), so `0`/"0" → "unit-0". Returns the canonical id or null if none
- *  matches — the caller turns null into a rejection reason. */
+ *  slips: the bare index ("0"), the prefix run together ("unit1"), or the exact
+ *  id ("unit-0"). Unit ids are generated as `unit-${n}` (see sim.ts), so we take
+ *  the trailing integer of whatever was sent and map it to `unit-${n}`. Returns
+ *  the canonical id or null if none matches. */
 function resolveUnitId(raw: unknown, world: World): string | null {
   if (typeof raw === 'string' && world.units[raw]) return raw;
-  const n =
-    typeof raw === 'number'
-      ? raw
-      : typeof raw === 'string' && raw.trim() !== ''
-        ? Number(raw)
-        : NaN;
+  let n = NaN;
+  if (typeof raw === 'number') n = raw;
+  else if (typeof raw === 'string') {
+    const m = raw.match(/(\d+)\s*$/); // trailing digits of "unit-3" / "unit3" / "3"
+    if (m) n = Number(m[1]);
+  }
   if (Number.isInteger(n)) {
     const id = `unit-${n}`;
     if (world.units[id]) return id;
@@ -73,10 +67,6 @@ function resolveUnitId(raw: unknown, world: World): string | null {
   return null;
 }
 
-/** Validate one candidate world action. Returns the accepted Action, or a
- *  `{ reject }` reason string so the caller can surface WHY it was dropped
- *  (instead of silently swallowing it). setView is handled separately — it is a
- *  view command, not a world action — so it should never reach here. */
 /** A positive integer quantity (accepts a numeric string), or null if invalid. */
 function coerceQty(v: unknown): number | null {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
@@ -85,6 +75,39 @@ function coerceQty(v: unknown): number | null {
   return i > 0 ? i : null;
 }
 
+/** Optional trailing "[item] [qty]" for drop/dropnearby/pickup, parsed
+ *  order-independently: a pure-integer token is the qty, the first other token
+ *  is the item id. Omitting the item means "the whole bag". */
+function itemQtyTail(tokens: string[]): { item?: string; qty?: number } {
+  let item: string | undefined;
+  let qty: number | undefined;
+  for (const t of tokens) {
+    if (/^\d+$/.test(t)) {
+      if (qty === undefined) qty = coerceQty(t) ?? undefined;
+    } else if (item === undefined) {
+      item = t;
+    }
+  }
+  return { item, qty };
+}
+
+// --- JSON fallback (legacy shape) ---------------------------------------
+
+/** Slice out the first balanced-looking JSON value of a given bracket type and
+ *  parse it. Returns the parsed value, or null if none parses. */
+function sliceJson(cleaned: string, open: string, close: string): unknown {
+  const start = cleaned.indexOf(open);
+  const end = cleaned.lastIndexOf(close);
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+/** Validate one candidate world-action OBJECT (the JSON fallback path). setView
+ *  is handled separately; it should never reach here. */
 function validateAction(raw: unknown, world: World): Action | { reject: string } {
   if (typeof raw !== 'object' || raw === null) return { reject: 'action is not an object' };
   const a = raw as Record<string, unknown>;
@@ -119,14 +142,11 @@ function validateAction(raw: unknown, world: World): Action | { reject: string }
         : { reject: `build: location ${coordStr(a.at)} out of bounds` };
     }
     case 'dropNearby': {
-      // item/qty are optional: omit item to dump the whole bag at the unit's feet.
       const item = typeof a.item === 'string' ? a.item : undefined;
       const qty = a.qty == null ? undefined : (coerceQty(a.qty) ?? undefined);
       return { type: 'dropNearby', unitId, ...(item ? { item } : {}), ...(qty ? { qty } : {}) };
     }
     case 'drop': {
-      // item/qty are optional: omit item to unload the whole bag onto `at` (or the
-      // depot there). `at` is still required — that's where to carry the load.
       const at = coerceCoord(a.at, world);
       if (!at) return { reject: `drop: location ${coordStr(a.at)} out of bounds` };
       const item = typeof a.item === 'string' ? a.item : undefined;
@@ -147,95 +167,262 @@ function validateAction(raw: unknown, world: World): Action | { reject: string }
   }
 }
 
-/** Validate a setView view command: `center` must be in-bounds, `tilesAcross` a
- *  positive finite number; at least one must be present. */
-function validateView(raw: Record<string, unknown>, world: World): ViewCommand | { reject: string } {
-  const cmd: ViewCommand = { type: 'setView' };
-  if (raw.center !== undefined) {
-    const center = coerceCoord(raw.center, world);
-    if (center) cmd.center = center;
-    else return { reject: `setView: center ${coordStr(raw.center)} out of bounds` };
-  }
-  if (raw.tilesAcross !== undefined) {
-    const t = raw.tilesAcross;
-    if (typeof t === 'number' && Number.isFinite(t) && t > 0) cmd.tilesAcross = Math.round(t);
-    else return { reject: `setView: bad tilesAcross ${JSON.stringify(t)}` };
-  }
-  if (cmd.center === undefined && cmd.tilesAcross === undefined) {
-    return { reject: 'setView: neither center nor tilesAcross given' };
-  }
-  return cmd;
-}
-
 /** Cap on how many rejection reasons we keep, so a runaway response can't flood
  *  the audit log/chat. We keep validating good actions past the cap — only the
  *  reason list stops growing. */
 const MAX_REJECTED = 10;
-
-/** Split a candidate list into accepted world actions, accepted view commands,
- *  and human-readable rejection reasons. setView items branch to view-command
- *  validation; everything else is a world action. */
-function splitAndValidate(
-  arr: unknown,
-  world: World,
-): { actions: Action[]; viewCommands: ViewCommand[]; rejected: string[] } {
-  const actions: Action[] = [];
-  const viewCommands: ViewCommand[] = [];
-  const rejected: string[] = [];
-  const push = (reason: string): void => {
-    if (rejected.length < MAX_REJECTED) rejected.push(reason);
-  };
-  if (!Array.isArray(arr)) return { actions, viewCommands, rejected };
-  for (const item of arr) {
-    if (item && typeof item === 'object' && (item as Record<string, unknown>).type === 'setView') {
-      const r = validateView(item as Record<string, unknown>, world);
-      if ('reject' in r) push(r.reject);
-      else viewCommands.push(r);
-      continue;
-    }
-    const r = validateAction(item, world);
-    if ('reject' in r) push(r.reject);
-    else actions.push(r);
-  }
-  return { actions, viewCommands, rejected };
-}
 
 /** Cap on how many edit ops we accept from a single response, so a runaway
  *  model can't flood the audit log or the applier. Generous — real edits are a
  *  handful. Length/count caps on the RESULT live in memory.ts. */
 const MEMORY_MAX_OPS = 20;
 
-/** Parse a "memory" field into a list of edit ops, or undefined to signal "no
- *  change" (field absent / not an array / no valid ops). This is the whole
- *  point of the op format: the model sends a few tiny diffs addressing items by
- *  their 1-based id, never the full list — so there is nothing to echo back and
- *  memory edits stay cheap even when memory is large.
- *
- *  Accepted per entry:
- *   - {op:"add", text} — text non-empty after trim
- *   - {op:"edit", id, text} — id an integer ≥1, text non-empty
- *   - {op:"del"|"delete"|"remove", id} — id an integer ≥1
- *  Anything malformed is dropped. Returns undefined (not []) when nothing valid
- *  survives, so the host treats it as "left memory alone". */
-function parseMemoryOps(raw: unknown): MemoryOp[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const ops: MemoryOp[] = [];
-  for (const item of raw) {
-    if (ops.length >= MEMORY_MAX_OPS) break;
-    if (typeof item !== 'object' || item === null) continue;
-    const o = item as Record<string, unknown>;
-    const kind = typeof o.op === 'string' ? o.op.trim().toLowerCase() : '';
-    const text = typeof o.text === 'string' ? o.text.trim().slice(0, MEMORY_MAX_LEN).trim() : '';
-    const id = Number.isInteger(o.id) ? (o.id as number) : NaN;
-    if (kind === 'add') {
-      if (text) ops.push({ op: 'add', text });
-    } else if (kind === 'edit') {
-      if (id >= 1 && text) ops.push({ op: 'edit', id, text });
-    } else if (kind === 'del' || kind === 'delete' || kind === 'remove') {
-      if (id >= 1) ops.push({ op: 'del', id });
+/** A small accumulator threaded through both the line parser and the JSON
+ *  fallback so they build the same result the same way. */
+interface Acc {
+  actions: Action[];
+  viewCommands: ViewCommand[];
+  rejected: string[];
+  memoryOps: MemoryOp[];
+  msg: string;
+}
+
+function newAcc(): Acc {
+  return { actions: [], viewCommands: [], rejected: [], memoryOps: [], msg: '' };
+}
+
+/** Record a rejection reason (capped). Returns true so a `return reject(...)`
+ *  inside parseLine reads as "known keyword, bad arguments" — callers that
+ *  return void ignore the value. */
+function reject(acc: Acc, reason: string): true {
+  if (acc.rejected.length < MAX_REJECTED) acc.rejected.push(reason);
+  return true;
+}
+
+// --- Line format (the primary shape) ------------------------------------
+
+/** Parse ONE `view ...` command's tokens: a pure-integer token is tilesAcross,
+ *  anything else is the center cell. At least one must be valid. */
+function parseView(tokens: string[], world: World, acc: Acc): void {
+  const cmd: ViewCommand = { type: 'setView' };
+  for (const t of tokens) {
+    if (/^\d+$/.test(t)) {
+      const n = Number(t);
+      if (n > 0) cmd.tilesAcross = Math.round(n);
+    } else if (cmd.center === undefined) {
+      const c = coerceCoord(t, world);
+      if (c) cmd.center = c;
+      else {
+        reject(acc, `view: center ${t} out of bounds`);
+        return;
+      }
     }
   }
-  return ops.length ? ops : undefined;
+  if (cmd.center === undefined && cmd.tilesAcross === undefined) {
+    reject(acc, 'view: neither a cell nor a zoom given');
+    return;
+  }
+  acc.viewCommands.push(cmd);
+}
+
+/** Parse ONE `mem <op> ...` line into a memory edit op. */
+function parseMemLine(tokens: string[], acc: Acc): void {
+  if (acc.memoryOps.length >= MEMORY_MAX_OPS) return;
+  const op = (tokens[0] ?? '').toLowerCase();
+  const clip = (s: string): string => s.trim().slice(0, MEMORY_MAX_LEN).trim();
+  if (op === 'add') {
+    const text = clip(tokens.slice(1).join(' '));
+    if (text) acc.memoryOps.push({ op: 'add', text });
+    else reject(acc, 'mem add: empty text');
+  } else if (op === 'edit') {
+    const id = Number(tokens[1]);
+    const text = clip(tokens.slice(2).join(' '));
+    if (Number.isInteger(id) && id >= 1 && text) acc.memoryOps.push({ op: 'edit', id, text });
+    else reject(acc, `mem edit: bad id/text ${tokens.slice(1, 2).join('')}`);
+  } else if (op === 'del' || op === 'delete' || op === 'remove') {
+    const id = Number(tokens[1]);
+    if (Number.isInteger(id) && id >= 1) acc.memoryOps.push({ op: 'del', id });
+    else reject(acc, `mem del: bad id ${tokens[1] ?? '(none)'}`);
+  } else {
+    reject(acc, `mem: unknown op ${tokens[0] ?? '(none)'}`);
+  }
+}
+
+/** Parse ONE action/command line. `verb` is already lowercased; `args` are the
+ *  whitespace tokens after it; `rest` is the untokenized remainder (for msg).
+ *  Returns true if `verb` was a KNOWN keyword (whether or not its args were
+ *  valid) — a line that isn't one of our keywords returns false so the caller
+ *  can tell a real command line from JSON/prose and fall back accordingly. */
+function parseLine(verb: string, args: string[], rest: string, world: World, acc: Acc): boolean {
+  const unit = (): string | null => resolveUnitId(args[0], world);
+  switch (verb) {
+    case 'msg': {
+      if (!acc.msg && rest) acc.msg = rest; // first msg wins; ignore any extras
+      break;
+    }
+    case 'move': {
+      const id = unit();
+      if (!id) return reject(acc, `move: unknown unit ${args[0] ?? '(none)'}`);
+      const to = coerceCoord(args[1], world);
+      if (!to) return reject(acc, `move: bad cell ${args[1] ?? '(none)'}`);
+      acc.actions.push({ type: 'move', unitId: id, to });
+      break;
+    }
+    case 'harvest': {
+      const id = unit();
+      if (!id) return reject(acc, `harvest: unknown unit ${args[0] ?? '(none)'}`);
+      const target = coerceCoord(args[1], world);
+      if (!target) return reject(acc, `harvest: bad cell ${args[1] ?? '(none)'}`);
+      acc.actions.push({ type: 'harvest', unitId: id, target });
+      break;
+    }
+    case 'craft': {
+      const id = unit();
+      if (!id) return reject(acc, `craft: unknown unit ${args[0] ?? '(none)'}`);
+      const recipe = args[1];
+      if (!recipe || !RECIPES[recipe]) return reject(acc, `craft: unknown recipe ${recipe ?? '(none)'}`);
+      acc.actions.push({ type: 'craft', unitId: id, recipe });
+      break;
+    }
+    case 'build': {
+      const id = unit();
+      if (!id) return reject(acc, `build: unknown unit ${args[0] ?? '(none)'}`);
+      const building = args[1];
+      if (!building || !BUILDINGS[building]) return reject(acc, `build: unknown building ${building ?? '(none)'}`);
+      const at = coerceCoord(args[2], world);
+      if (!at) return reject(acc, `build: bad cell ${args[2] ?? '(none)'}`);
+      acc.actions.push({ type: 'build', unitId: id, building, at });
+      break;
+    }
+    case 'drop': {
+      const id = unit();
+      if (!id) return reject(acc, `drop: unknown unit ${args[0] ?? '(none)'}`);
+      const at = coerceCoord(args[1], world);
+      if (!at) return reject(acc, `drop: bad cell ${args[1] ?? '(none)'}`);
+      const { item, qty } = itemQtyTail(args.slice(2));
+      acc.actions.push({ type: 'drop', unitId: id, at, ...(item ? { item } : {}), ...(qty ? { qty } : {}) });
+      break;
+    }
+    case 'dropnearby': {
+      const id = unit();
+      if (!id) return reject(acc, `dropnearby: unknown unit ${args[0] ?? '(none)'}`);
+      const { item, qty } = itemQtyTail(args.slice(1));
+      acc.actions.push({ type: 'dropNearby', unitId: id, ...(item ? { item } : {}), ...(qty ? { qty } : {}) });
+      break;
+    }
+    case 'pickup': {
+      const id = unit();
+      if (!id) return reject(acc, `pickup: unknown unit ${args[0] ?? '(none)'}`);
+      const at = coerceCoord(args[1], world);
+      if (!at) return reject(acc, `pickup: bad cell ${args[1] ?? '(none)'}`);
+      const { item, qty } = itemQtyTail(args.slice(2));
+      acc.actions.push({ type: 'pickup', unitId: id, at, ...(item ? { item } : {}), ...(qty ? { qty } : {}) });
+      break;
+    }
+    case 'cancel': {
+      const id = unit();
+      if (!id) return reject(acc, `cancel: unknown unit ${args[0] ?? '(none)'}`);
+      acc.actions.push({ type: 'cancel', unitId: id });
+      break;
+    }
+    case 'view':
+      parseView(args, world, acc);
+      break;
+    case 'mem':
+    case 'memory':
+      parseMemLine(args, acc);
+      break;
+    default:
+      return false; // unknown keyword — caller decides whether to reject/fallback
+  }
+  return true;
+}
+
+/** Parse the line format. Returns the accumulator, or null if not a single
+ *  recognizable line was found (so the caller can try the JSON fallback). */
+function parseLines(cleaned: string, world: World): Acc | null {
+  const acc = newAcc();
+  let recognized = 0;
+  for (const rawLine of cleaned.split('\n')) {
+    // Tolerate a leading list marker ("- ", "* ", "1. ") the model may add.
+    const line = rawLine.trim().replace(/^(?:[-*]|\d+\.)\s+/, '');
+    if (!line) continue;
+    const m = line.match(/^(\S+)\s*(.*)$/);
+    if (!m) continue;
+    const verb = m[1].toLowerCase().replace(/:$/, ''); // tolerate "move:"
+    const rest = m[2].trim();
+    const args = rest ? rest.split(/\s+/) : [];
+    if (parseLine(verb, args, rest, world, acc)) recognized++;
+  }
+  return recognized > 0 ? acc : null;
+}
+
+/** JSON fallback: the legacy {"actions":[...],"msg":"...","memory":[...]} object
+ *  (or a bare actions array). Only tried when the line parser found nothing. */
+function parseJson(cleaned: string, world: World): Acc {
+  const acc = newAcc();
+  const validate = (item: unknown): void => {
+    if (item && typeof item === 'object' && (item as Record<string, unknown>).type === 'setView') {
+      const v = item as Record<string, unknown>;
+      const cmd: ViewCommand = { type: 'setView' };
+      const center = v.center !== undefined ? coerceCoord(v.center, world) : null;
+      if (v.center !== undefined && !center) {
+        reject(acc, `setView: center ${coordStr(v.center)} out of bounds`);
+        return;
+      }
+      if (center) cmd.center = center;
+      if (typeof v.tilesAcross === 'number' && Number.isFinite(v.tilesAcross) && v.tilesAcross > 0) {
+        cmd.tilesAcross = Math.round(v.tilesAcross);
+      }
+      if (cmd.center === undefined && cmd.tilesAcross === undefined) {
+        reject(acc, 'setView: neither center nor tilesAcross given');
+        return;
+      }
+      acc.viewCommands.push(cmd);
+      return;
+    }
+    const r = validateAction(item, world);
+    if ('reject' in r) reject(acc, r.reject);
+    else acc.actions.push(r);
+  };
+
+  // A bare actions array (no wrapping object) also contains `{...}` objects, so
+  // decide by which bracket opens FIRST — otherwise the object scan would grab
+  // the array's first element and treat it as the top-level payload.
+  const objStart = cleaned.indexOf('{');
+  const arrStart = cleaned.indexOf('[');
+  if (arrStart !== -1 && (objStart === -1 || arrStart < objStart)) {
+    const arr = sliceJson(cleaned, '[', ']');
+    if (Array.isArray(arr)) arr.forEach(validate);
+    else reject(acc, 'response was neither command lines nor valid JSON — no actions parsed');
+    return acc;
+  }
+
+  const obj = sliceJson(cleaned, '{', '}');
+  if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+    const o = obj as Record<string, unknown>;
+    if (Array.isArray(o.actions)) o.actions.forEach(validate);
+    if (typeof o.msg === 'string') acc.msg = o.msg.trim();
+    if (Array.isArray(o.memory)) {
+      for (const raw of o.memory) {
+        if (acc.memoryOps.length >= MEMORY_MAX_OPS) break;
+        if (typeof raw !== 'object' || raw === null) continue;
+        const op = raw as Record<string, unknown>;
+        const kind = typeof op.op === 'string' ? op.op.trim().toLowerCase() : '';
+        const text = typeof op.text === 'string' ? op.text.trim().slice(0, MEMORY_MAX_LEN).trim() : '';
+        const id = Number.isInteger(op.id) ? (op.id as number) : NaN;
+        if (kind === 'add' && text) acc.memoryOps.push({ op: 'add', text });
+        else if (kind === 'edit' && id >= 1 && text) acc.memoryOps.push({ op: 'edit', id, text });
+        else if ((kind === 'del' || kind === 'delete' || kind === 'remove') && id >= 1) acc.memoryOps.push({ op: 'del', id });
+      }
+    }
+    return acc;
+  }
+
+  const arr = sliceJson(cleaned, '[', ']');
+  if (Array.isArray(arr)) arr.forEach(validate);
+  else reject(acc, 'response was neither command lines nor valid JSON — no actions parsed');
+  return acc;
 }
 
 /** The parsed model response: accepted world actions + view commands, an
@@ -243,8 +430,8 @@ function parseMemoryOps(raw: unknown): MemoryOp[] | undefined {
  *  anything we had to drop (so failures are auditable rather than silent). */
 export interface OrchestratorResponse {
   actions: Action[];
-  /** Camera moves requested via setView (applied client-side, not through the
-   *  sim). Empty when the model didn't touch the view. */
+  /** Camera moves requested via a `view` command (applied client-side, not
+   *  through the sim). Empty when the model didn't touch the view. */
   viewCommands: ViewCommand[];
   /** Human-readable reasons for dropped items (bad unit, out-of-bounds, unknown
    *  recipe, un-parseable response). Empty on a clean response. */
@@ -255,29 +442,20 @@ export interface OrchestratorResponse {
 }
 
 /** Parse a model response into accepted actions/view commands + optional player
- *  reply, plus reasons for anything rejected. Accepts the object form
- *  {"actions":[...],"msg":"..."} first, then falls back to a bare actions array
- *  (older/looser outputs). */
+ *  reply, plus reasons for anything rejected. Tries the compact LINE format
+ *  first (the format the prompt now asks for); falls back to the legacy JSON
+ *  object/array if not one line was recognized. */
 export function parseResponse(text: string, world: World): OrchestratorResponse {
-  const cleaned = text.replace(/```(?:json)?/gi, '').trim();
+  const cleaned = text.replace(/```(?:json|txt|text)?/gi, '').trim();
 
-  const obj = sliceJson(cleaned, '{', '}');
-  if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-    const o = obj as Record<string, unknown>;
-    const { actions, viewCommands, rejected } = splitAndValidate(o.actions, world);
-    const msg = typeof o.msg === 'string' ? o.msg.trim() : '';
-    const memoryOps = parseMemoryOps(o.memory);
-    const res: OrchestratorResponse = { actions, viewCommands, rejected };
-    if (msg) res.msg = msg;
-    if (memoryOps !== undefined) res.memoryOps = memoryOps;
-    return res;
-  }
+  const acc = parseLines(cleaned, world) ?? parseJson(cleaned, world);
 
-  // Fallback: a bare array of actions, no message. If nothing parsed at all
-  // (no JSON object AND no JSON array), flag it so the empty result isn't
-  // mistaken for a deliberate no-op plan.
-  const arr = sliceJson(cleaned, '[', ']');
-  const { actions, viewCommands, rejected } = splitAndValidate(arr, world);
-  if (arr === null) rejected.push('response was not valid JSON — no actions parsed');
-  return { actions, viewCommands, rejected };
+  const res: OrchestratorResponse = {
+    actions: acc.actions,
+    viewCommands: acc.viewCommands,
+    rejected: acc.rejected,
+  };
+  if (acc.msg) res.msg = acc.msg;
+  if (acc.memoryOps.length) res.memoryOps = acc.memoryOps;
+  return res;
 }

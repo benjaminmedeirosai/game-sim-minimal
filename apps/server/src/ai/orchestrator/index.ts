@@ -23,8 +23,9 @@ export { ORCHESTRATOR_AGENT };
 // The tuning for orchestrator calls, in one place so the request and the
 // Config-tab display can't disagree. A modest temperature (0.6, not 0) so the
 // steward's in-character "msg" replies stay VARIED instead of collapsing to the
-// same sentence every time; the JSON action shapes are constrained enough by
-// the prompt that this bit of heat doesn't hurt obedience. Thinking OFF — gemma
+// same sentence every time; the one-command-per-line action forms are
+// constrained enough by the prompt that this bit of heat doesn't hurt obedience.
+// Thinking OFF — gemma
 // reasons on every call otherwise, ~28× slower for no gain on these short prompts.
 const ORCHESTRATOR_OPTS: ChatOptions = { temperature: 0.6, think: false };
 
