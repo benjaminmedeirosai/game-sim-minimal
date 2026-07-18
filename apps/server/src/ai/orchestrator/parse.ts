@@ -384,10 +384,16 @@ function parseLine(verb: string, args: string[], rest: string, world: World, acc
     case 'build': {
       const id = unit();
       if (!id) return reject(acc, `build: unknown unit ${args[0] ?? '(none)'}`);
-      const building = args[1];
-      if (!building || !BUILDINGS[building]) return reject(acc, `build: unknown building ${building ?? '(none)'}`);
-      const at = coerceCoord(args[2], world);
-      if (!at) return reject(acc, `build: bad cell ${args[2] ?? '(none)'}`);
+      // Tolerate either order — "build <id> <building> <cell>" (the documented
+      // form) or "build <id> <cell> <building>" (a common model slip): the known
+      // building name identifies itself, and the other token is the cell.
+      const a = args[1];
+      const b = args[2];
+      const building = a && BUILDINGS[a] ? a : b && BUILDINGS[b] ? b : undefined;
+      if (!building) return reject(acc, `build: unknown building ${a ?? '(none)'}`);
+      const cellTok = building === a ? b : a;
+      const at = coerceCoord(cellTok, world);
+      if (!at) return reject(acc, `build: bad cell ${cellTok ?? '(none)'}`);
       acc.actions.push({ type: 'build', unitId: id, building, at });
       break;
     }
@@ -451,6 +457,7 @@ function parseLine(verb: string, args: string[], rest: string, world: World, acc
 function parseLines(cleaned: string, world: World): Acc | null {
   const acc = newAcc();
   let recognized = 0;
+  const unknown: string[] = [];
   for (const rawLine of cleaned.split('\n')) {
     // Tolerate a leading list marker ("- ", "* ", "1. ") the model may add.
     const line = rawLine.trim().replace(/^(?:[-*]|\d+\.)\s+/, '');
@@ -461,8 +468,16 @@ function parseLines(cleaned: string, world: World): Acc | null {
     const rest = m[2].trim();
     const args = rest ? rest.split(/\s+/) : [];
     if (parseLine(verb, args, rest, world, acc)) recognized++;
+    else unknown.push(line);
   }
-  return recognized > 0 ? acc : null;
+  // Nothing looked like a command line — let the caller try the JSON fallback
+  // (and don't pollute its rejections with prose we were never meant to parse).
+  if (recognized === 0) return null;
+  // We WERE in line mode, so any leftover non-command line is a real miss (a bad
+  // verb like "pickaxe", a stray prose line). Surface each as a rejection so it's
+  // auditable instead of silently vanishing.
+  for (const line of unknown) reject(acc, `unrecognized command: ${line.slice(0, 60)}`);
+  return acc;
 }
 
 /** JSON fallback: the legacy {"actions":[...],"msg":"...","memory":[...]} object
