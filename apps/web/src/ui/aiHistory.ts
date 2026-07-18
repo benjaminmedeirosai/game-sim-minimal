@@ -569,8 +569,10 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
             return (
               `<div class="ai-mem-row">` +
               `<span class="ai-mem-num">${id}</span>` +
-              `<input class="ai-mem-input" data-mem-id="${id}" value="${esc(m)}" />` +
-              `<button class="seg ai-mem-save" data-mem-save="${id}" title="Save this line">Save</button>` +
+              `<input class="ai-mem-input" data-mem-id="${id}" data-mem-orig="${esc(m)}" value="${esc(m)}" />` +
+              // Disabled until the text actually differs from the saved line
+              // (toggled live by the 'input' listener) — nothing to save at rest.
+              `<button class="seg ai-mem-save" data-mem-save="${id}" title="Save this line" disabled>Save</button>` +
               `<button class="seg ai-mem-del" data-mem-del="${id}" title="Delete this line">✕</button>` +
               `</div>`
             );
@@ -716,6 +718,17 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       }
       return;
     }
+  });
+  // Enable a line's Save button only while its text differs from what's saved
+  // (and isn't blank), so an unchanged line can't be re-saved. Disabled buttons
+  // don't dispatch clicks, so this also gates the Enter-to-save path below.
+  body.addEventListener('input', (e) => {
+    const t = e.target as HTMLElement;
+    if (!(t instanceof HTMLInputElement) || !t.dataset.memId) return;
+    const saveBtn = body.querySelector<HTMLButtonElement>(`[data-mem-save="${t.dataset.memId}"]`);
+    if (!saveBtn) return;
+    const text = t.value.trim();
+    saveBtn.disabled = text === '' || text === (t.dataset.memOrig ?? '');
   });
   // Enter in a memory field commits it (Save for an existing line, Add for the
   // new-line field), so editing feels like a normal text input.

@@ -456,6 +456,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 }
 .seg:hover { background: #2f3441; }
 .seg.active { background: color-mix(in srgb, var(--accent) 26%, transparent); border-color: var(--accent); color: #fff; }
+.seg:disabled { opacity: 0.4; cursor: default; }
+.seg:disabled:hover { background: #262a35; }
 .ai-cfg-size {
   font-size: 12px; font-weight: 600; color: var(--fg);
   font-variant-numeric: tabular-nums; cursor: help;
