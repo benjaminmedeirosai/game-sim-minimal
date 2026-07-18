@@ -827,6 +827,43 @@ function dropOnGround(world: World, at: Coord, item: string, qty: number): void 
   }
 }
 
+/** One-time migration for saves made before the one-resource-per-tile rule:
+ *  any ground tile holding more than one item type (or over a stack) keeps its
+ *  largest stack in place and re-drops the rest via dropOnGround, which scatters
+ *  them to the nearest single-item/empty ground. Returns how many tiles it had
+ *  to fix (0 on an already-clean world). Idempotent — a second pass is a no-op. */
+export function normalizeGroundItems(world: World): number {
+  let fixed = 0;
+  for (let y = 0; y < world.height; y++) {
+    for (let x = 0; x < world.width; x++) {
+      const t = tileAt(world, x, y);
+      if (!t?.items) continue;
+      const keys = Object.keys(t.items).filter((k) => (t.items![k] ?? 0) > 0);
+      const only = keys[0];
+      // Already clean: at most one item type, within one stack.
+      if (keys.length === 0) {
+        t.items = undefined;
+        continue;
+      }
+      if (keys.length === 1 && only && t.items[only]! <= itemStack(only)) continue;
+      // Keep the biggest stack here (capped to one stack); spill the remainder.
+      keys.sort((a, b) => (t.items![b] ?? 0) - (t.items![a] ?? 0));
+      const keep = keys[0]!;
+      const spill: Array<[string, number]> = [];
+      const keepMax = itemStack(keep);
+      for (const k of keys) {
+        const qty = t.items[k]!;
+        if (k === keep && qty > keepMax) spill.push([k, qty - keepMax]);
+        else if (k !== keep) spill.push([k, qty]);
+      }
+      t.items = { [keep]: Math.min(t.items[keep]!, keepMax) };
+      for (const [item, qty] of spill) dropOnGround(world, { x, y }, item, qty);
+      fixed++;
+    }
+  }
+  return fixed;
+}
+
 function verbFor(obj: WorldObject): 'chop' | 'mine' | 'gather' {
   if (obj.kind === 'tree') return obj.hasFruit ? 'gather' : 'chop';
   return 'mine';

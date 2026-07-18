@@ -171,11 +171,30 @@ export function storageIconSvg(): string {
 }
 
 /** One loose resource, drawn bold in tile-space (0..1) sitting low like it's on
- *  the ground, with a ground shadow and (for a stack) a small count badge. */
+ *  the ground, with a ground shadow and (for a stack) a small count badge. The
+ *  glyph is scaled up to fill most of the tile (like the log does) so a drop is
+ *  big and unmistakable — small shapes (fruit, ore, sack) get the most boost. */
 export function itemSvg(id: string, qty?: number): string {
-  const shadow = `<ellipse cx="0.5" cy="0.82" rx="0.26" ry="0.06" fill="#00000030"/>`;
+  const shadow = `<ellipse cx="0.5" cy="0.82" rx="0.3" ry="0.07" fill="#00000030"/>`;
   const count = qty && qty > 1 ? countBadge(qty) : '';
-  return shadow + itemGlyph(id) + count;
+  const s = glyphScale(id);
+  const glyph =
+    s === 1
+      ? itemGlyph(id)
+      : `<g transform="translate(0.5 0.58) scale(${s}) translate(-0.5 -0.58)">${itemGlyph(id)}</g>`;
+  return shadow + glyph + count;
+}
+
+/** How much to enlarge each glyph so a ground drop fills its tile. The log is
+ *  already tile-wide (1×, the reference); the compact shapes are scaled up to
+ *  match its visual weight without clipping the tile edges. */
+function glyphScale(id: string): number {
+  if (id === 'wood') return 1;
+  if (id === 'stone') return 1.12;
+  if (id === 'axe' || id === 'pickaxe') return 1.15;
+  if (id === 'fruit') return 1.4;
+  if (id.endsWith('Ore')) return 1.4;
+  return 1.35; // sack fallback for unlisted items
 }
 
 /** The recognizable shape for a resource id, minus shadow/badge (so it can be
@@ -207,14 +226,20 @@ function log(): string {
   );
 }
 
-/** A couple of smooth grey stones. */
+/** A small pile of grey rocks — a big front boulder with a facet highlight and
+ *  a smaller stone behind, drawn bold so a ground drop reads as "stone" at a
+ *  glance (matches the rock object's palette). */
 function stones(): string {
   return (
-    `<path d="M0.22 0.74 Q0.17 0.5 0.4 0.48 Q0.58 0.47 0.57 0.66 Q0.56 0.76 0.38 0.76 Z" ` +
-    `fill="#9297a0" stroke="#00000045" stroke-width="0.02"/>` +
-    `<path d="M0.52 0.76 Q0.49 0.58 0.66 0.56 Q0.82 0.56 0.81 0.7 Q0.8 0.78 0.65 0.78 Z" ` +
-    `fill="#b2b7bf" stroke="#00000045" stroke-width="0.02"/>` +
-    `<ellipse cx="0.34" cy="0.56" rx="0.06" ry="0.03" fill="#ffffff30"/>`
+    // Smaller stone tucked behind-right.
+    `<path d="M0.56 0.52 Q0.64 0.36 0.8 0.42 Q0.9 0.49 0.82 0.62 Q0.73 0.68 0.6 0.62 Z" ` +
+    `fill="#b4b9c1" stroke="#00000055" stroke-width="0.025"/>` +
+    // Big front boulder.
+    `<path d="M0.22 0.8 Q0.1 0.72 0.18 0.55 Q0.28 0.4 0.5 0.42 Q0.72 0.44 0.72 0.64 Q0.72 0.78 0.54 0.81 Z" ` +
+    `fill="#9aa0a8" stroke="#00000055" stroke-width="0.028"/>` +
+    // A facet line + highlight to give it volume.
+    `<path d="M0.28 0.62 L0.42 0.53 L0.52 0.64" fill="none" stroke="#00000030" stroke-width="0.02"/>` +
+    `<ellipse cx="0.36" cy="0.55" rx="0.08" ry="0.04" fill="#ffffff38"/>`
   );
 }
 

@@ -15,6 +15,7 @@ import {
   applyAction,
   fogWorld,
   generateWorld,
+  normalizeGroundItems,
   normalizeSettings,
   OBJECT_HP,
   tick,
@@ -194,6 +195,13 @@ export class Host {
       this.aiVoice = save.aiVoice && isVoiceId(save.aiVoice) ? save.aiVoice : DEFAULT_VOICE;
       this.aiModel = save.aiModel;
       this.actionLog = save.actionLog;
+      // Heal legacy saves made before the one-resource-per-tile rule: split any
+      // mixed ground tiles so nothing sits stacked with a different resource.
+      const healed = normalizeGroundItems(this.world);
+      if (healed > 0) {
+        this.dirty = true; // persist the cleaned world on the next autosave
+        console.log(`[save] normalized ${healed} mixed ground tile(s) to one resource each`);
+      }
       console.log(
         `[save] resumed world ${this.world.id} at tick ${this.world.tick} from ${savePath()}`,
       );
