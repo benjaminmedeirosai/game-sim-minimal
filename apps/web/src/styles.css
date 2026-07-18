@@ -178,6 +178,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   border: 1px solid var(--border); box-shadow: 0 2px 8px rgba(0,0,0,0.4);
   font-size: 12px; font-weight: 600; color: var(--fg); white-space: nowrap;
 }
+.cursor-hint[hidden] { display: none; }
 .cursor-hint.warn { border-color: #c85a54; color: #f0a8a4; }
 .cursor-hint .ch-icon { display: inline-flex; width: 20px; height: 20px; }
 .cursor-hint .ch-icon svg { display: block; }
@@ -633,6 +634,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 12px; padding: 16px 18px; z-index: 3;
   box-shadow: 0 12px 32px #0008;
+  max-height: calc(100vh - 70px); overflow-y: auto;
 }
 .panel-hud { width: 260px; }
 h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }

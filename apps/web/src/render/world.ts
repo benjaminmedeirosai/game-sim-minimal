@@ -200,11 +200,17 @@ export function mountWorld(container: HTMLElement): void {
       return;
     }
     const h = actionHint(world, u, x, y);
-    hint.innerHTML = `<span class="ch-icon">${h.icon}</span><span class="ch-label">${h.label}</span>`;
-    hint.classList.toggle('warn', !!h.warn);
-    hint.style.left = `${lastClient.x - rect.left + 16}px`;
-    hint.style.top = `${lastClient.y - rect.top + 18}px`;
-    hint.hidden = false;
+    // A plain move has no chip (targeting crosshair is enough); only real
+    // actions get a labelled hint.
+    if (h) {
+      hint.innerHTML = `<span class="ch-icon">${h.icon}</span><span class="ch-label">${h.label}</span>`;
+      hint.classList.toggle('warn', !!h.warn);
+      hint.style.left = `${lastClient.x - rect.left + 16}px`;
+      hint.style.top = `${lastClient.y - rect.top + 18}px`;
+      hint.hidden = false;
+    } else {
+      hint.hidden = true;
+    }
     container.classList.add('targeting');
   };
   container.addEventListener('pointermove', (e) => updateHint(e.clientX, e.clientY));
@@ -226,7 +232,7 @@ function actionHint(
   u: Unit,
   x: number,
   y: number,
-): { label: string; icon: string; warn?: boolean } {
+): { label: string; icon: string; warn?: boolean } | null {
   const other = Object.values(world.units).find((v) => v.pos.x === x && v.pos.y === y);
   if (other && other.id !== u.id) return { label: `Select ${unitShort(other.id)}`, icon: SELECT_ICON };
 
@@ -248,18 +254,11 @@ function actionHint(
   }
   if (tile?.items) {
     const key = Object.keys(tile.items)[0];
-    return key
-      ? { label: `Pick up ${key}`, icon: itemIconSvg(key) }
-      : { label: 'Pick up', icon: MOVE_ICON };
+    if (key) return { label: `Pick up ${key}`, icon: itemIconSvg(key) };
   }
-  return { label: 'Move', icon: MOVE_ICON };
+  // A plain move gets no hint chip.
+  return null;
 }
-
-// Inline cursor-hint icons that aren't resource/tool glyphs.
-const MOVE_ICON =
-  `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#e8eaed" stroke-width="2" ` +
-  `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
-  `<path d="M12 2v20M2 12h20"/><path d="M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></svg>`;
 const SELECT_ICON =
   `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#ffd54a" stroke-width="2" aria-hidden="true">` +
   `<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.6" fill="#ffd54a"/></svg>`;
