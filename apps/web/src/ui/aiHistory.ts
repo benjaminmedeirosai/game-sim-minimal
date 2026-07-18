@@ -2,8 +2,8 @@
 // tabs:
 //   History — every request/response for the selected agent (command, the
 //             actions it produced, latency, and the verbatim model output).
-//   Config  — exactly what we send the model, as raw text (View Raw) or split
-//             into friendly sections (View Pretty).
+//   Config  — exactly what we send the model, split into friendly sections
+//             (with a per-section KV-cache badge and the total prompt size).
 // An agent selector switches which agent you're inspecting (one today, more
 // later). Data comes from the host on demand via { m: 'aiHistoryReq' }, and an
 // open window refetches when the host reports a new exchange (aiEvents).
@@ -64,7 +64,6 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   let isOpen = false;
   let current = 'orchestrator';
   let tab: 'history' | 'config' | 'memory' = 'history';
-  let configMode: 'pretty' | 'raw' = 'pretty';
   // Config View-Pretty sections longer than this (chars) render collapsed by
   // default, so the long ones (System, World, Voice) don't bury the rest.
   const COLLAPSE_THRESHOLD = 200;
@@ -296,8 +295,6 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       : '';
     const toggle =
       `<div class="ai-cfg-toggle">` +
-      `<button class="seg ${configMode === 'pretty' ? 'active' : ''}" data-cfg="pretty">View Pretty</button>` +
-      `<button class="seg ${configMode === 'raw' ? 'active' : ''}" data-cfg="raw">View Raw</button>` +
       `<span class="ai-cfg-size" title="Total prompt size. Token estimate calibrated to the model's own tokenizer from recent exchanges.">${sizeLabel(config.raw.length, cpt)}</span>` +
       targetChip +
       `<span class="ai-model">model: ${esc(config.model)}</span>` +
@@ -309,10 +306,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const runtime =
       `<section class="ai-settings ai-runtime"><h3>Runtime</h3>` +
       `<div class="ai-runtime-body" id="ai-status">${statusCard(aiStatus.get().status)}</div></section>`;
-    const content =
-      configMode === 'raw'
-        ? `<pre class="ai-cfg-raw">${esc(config.raw)}</pre>`
-        : `<div class="ai-cfg-parts">${config.parts.map((p) => partSection(p, cpt)).join('')}</div>`;
+    const content = `<div class="ai-cfg-parts">${config.parts.map((p) => partSection(p, cpt)).join('')}</div>`;
     // Request settings first — they're model-specific, and the model picker
     // lives here — then the live runtime card. Voice below: personas are common
     // across models.
@@ -363,7 +357,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     return null;
   }
 
-  // One prompt section in View Pretty. Short sections stay as plain, always-
+  // One prompt section in the Config view. Short sections stay as plain, always-
   // visible cards; sections over COLLAPSE_THRESHOLD chars become a <details> so
   // the big ones (System, World, Voice) can be folded away. The open/closed
   // state is driven by openParts (see the 'toggle' listener) so a background
@@ -672,12 +666,6 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   });
   body.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
-    const cfgBtn = target.closest<HTMLElement>('[data-cfg]');
-    if (cfgBtn) {
-      configMode = cfgBtn.dataset.cfg as 'pretty' | 'raw';
-      render();
-      return;
-    }
     // Switch voice: fire-and-forget. The host echoes an aiEvent, which triggers
     // a refetch (below), so the picker + Voice part re-render from the new state.
     const voiceBtn = target.closest<HTMLElement>('[data-voice]');
