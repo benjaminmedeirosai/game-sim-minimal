@@ -443,7 +443,13 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 }
 
 /* config tab */
-.ai-cfg-toggle { display: flex; align-items: center; gap: 6px; margin-bottom: 14px; }
+/* The prompt-stats strip above the sections: size · cache expectation · model,
+ * in a quiet rounded panel. */
+.ai-cfg-toggle {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px;
+  margin-bottom: 14px; padding: 9px 12px;
+  background: #0a0c11; border: 1px solid var(--border); border-radius: 10px;
+}
 .seg {
   padding: 6px 12px; background: #262a35; color: var(--fg);
   border: 1px solid transparent; border-radius: 7px; cursor: pointer; font-size: 12px;
@@ -451,10 +457,15 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .seg:hover { background: #2f3441; }
 .seg.active { background: color-mix(in srgb, var(--accent) 26%, transparent); border-color: var(--accent); color: #fff; }
 .ai-cfg-size {
-  margin-left: auto; font-size: 11px; color: var(--fg);
+  font-size: 12px; font-weight: 600; color: var(--fg);
   font-variant-numeric: tabular-nums; cursor: help;
 }
-.ai-model { font-size: 11px; color: var(--muted); }
+.ai-model {
+  margin-left: auto; font-size: 11px; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 999px; padding: 2px 10px;
+}
 .ai-settings { margin-bottom: 16px; }
 .ai-settings h3 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
 .ai-set-grid {
