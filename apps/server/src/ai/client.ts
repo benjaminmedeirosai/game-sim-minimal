@@ -261,13 +261,27 @@ class OllamaClient {
   /** Like chat(), but the messages are BUILT the moment this call reaches the
    *  front of the serial queue — not when it was enqueued. So a command that
    *  waits behind others assembles its prompt against the freshest world/
-   *  conversation state right before it's sent. Same rejection-safe chaining. */
-  chatDeferred(build: () => ChatMessage[], opts: ChatOptions = {}): Promise<ChatResult> {
-    const run = this.queue.then(() => {
+   *  conversation state right before it's sent.
+   *
+   *  `finish` runs INSIDE the same queue slot, right after the response arrives
+   *  and BEFORE the next queued command's build() fires. This ordering is load-
+   *  bearing: it lets the caller commit this exchange to conversation history so
+   *  the FOLLOWING command's prompt reflects it. Without it, two commands queued
+   *  back-to-back both build() before either exchange lands in history, so they
+   *  assemble byte-identical prompts — no growing conversation, and the KV-cache
+   *  "expected diff" reads a bogus 100%. Same rejection-safe chaining; the queue
+   *  tail waits for finish() too, so the next build() always sees the commit. */
+  chatDeferred<T>(
+    build: () => ChatMessage[],
+    opts: ChatOptions,
+    finish: (result: ChatResult) => T | Promise<T>,
+  ): Promise<T> {
+    const run = this.queue.then(async () => {
       if (!this.available) {
         throw new Error(`Ollama is not running. Start it with \`ollama serve\` (model ${this.currentModel}).`);
       }
-      return this.rawChat(build(), opts);
+      const result = await this.rawChat(build(), opts);
+      return finish(result);
     });
     this.queue = run.catch(() => undefined);
     return run;

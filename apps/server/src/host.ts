@@ -45,6 +45,7 @@ import {
   orchestratorConfig,
   runOrchestrator,
 } from './ai/orchestrator/index.js';
+import type { RunResult } from './ai/orchestrator/index.js';
 import { applyMemoryOps, memoryChanged } from './ai/orchestrator/memory.js';
 import { DEFAULT_VOICE, isVoiceId } from './ai/orchestrator/voice.js';
 import { loadSave, savePath, writeSave } from './persist.js';
@@ -498,7 +499,7 @@ export class Host {
     this.pendingList().push(pending);
     this.broadcast({ m: 'aiEvent', agent: ORCHESTRATOR_AGENT });
 
-    const result = await runOrchestrator({
+    await runOrchestrator({
       command: text,
       submitter: onBehalfOf,
       context: () => ({
@@ -509,8 +510,25 @@ export class Host {
         cameras: this.camerasFor(roster),
         voice: this.aiVoice,
       }),
+      // Runs INSIDE the AI queue slot, before the next queued command builds its
+      // prompt — so everything this command changed (memory, conversation
+      // history, the world) is visible to the following command. Committing this
+      // after the await instead would let a back-to-back command build against
+      // stale state and emit a byte-identical prompt (blowing the KV-cache).
+      commit: (result) => this.commitExchange(source, onBehalfOf, pending, result),
     });
+  }
 
+  /** File a finished orchestrator exchange: apply its memory ops, drop it from
+   *  pending, record it in history, dispatch its actions, and nudge the asking
+   *  player's camera. Called from within the AI queue slot (see runCommand's
+   *  `commit`) so it fully lands before the next queued command assembles. */
+  private commitExchange(
+    source: ActionSource,
+    onBehalfOf: string | undefined,
+    pending: AiPending,
+    result: RunResult,
+  ): void {
     // Apply any memory edit ops the model committed (add/edit/del by id — see
     // the op contract in the prompt). Absent = leave memory as-is. Ops that
     // amount to no net change (e.g. a stray out-of-range del) are treated as a

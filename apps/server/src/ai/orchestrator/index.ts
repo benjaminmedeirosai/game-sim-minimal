@@ -67,6 +67,11 @@ export interface RunOrchestratorInput {
   /** Called when the command reaches the front of the AI queue, to snapshot the
    *  world/roster/conversation at send-time rather than submit-time. */
   context: () => OrchestratorContext;
+  /** Called with the parsed result INSIDE the serial AI queue slot — before the
+   *  next queued command assembles its prompt. The host commits the exchange to
+   *  conversation history here so the following command sees this turn (see
+   *  chatDeferred). Skipped on the daemon-down error path (nothing was sent). */
+  commit?: (result: RunResult) => void;
 }
 
 /** Run one command through the model and return the planned actions plus a
@@ -74,7 +79,7 @@ export interface RunOrchestratorInput {
  *  The prompt is assembled inside the AI queue (see `context`), so a command
  *  that waited behind others reflects the world as it is when actually sent. */
 export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunResult> {
-  const { command, submitter, context } = input;
+  const { command, submitter, context, commit } = input;
 
   // Populated when the deferred build runs; captured for the audit record and
   // for validating the response against the exact world we sent.
@@ -98,14 +103,20 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
   };
 
   try {
-    const { text, ms, stats } = await ollama.chatDeferred(build, ORCHESTRATOR_OPTS);
-    const { actions, viewCommands, rejected, msg, memoryOps } = parseResponse(text, worldAtSend!);
-    const output: AiExchange['output'] = { raw: text, actions, stats };
-    if (msg) output.msg = msg;
-    if (memoryOps !== undefined) output.memoryOps = memoryOps;
-    if (rejected.length) output.warnings = rejected;
-    if (viewCommands.length) output.viewCommands = viewCommands;
-    return { actions, viewCommands, input: record!, output, ms, memoryOps };
+    // parse + commit run INSIDE the serial queue slot (see chatDeferred): the
+    // exchange must land in conversation history before the next queued command
+    // builds its prompt, or two back-to-back commands assemble identical ones.
+    return await ollama.chatDeferred(build, ORCHESTRATOR_OPTS, ({ text, ms, stats }) => {
+      const { actions, viewCommands, rejected, msg, memoryOps } = parseResponse(text, worldAtSend!);
+      const output: AiExchange['output'] = { raw: text, actions, stats };
+      if (msg) output.msg = msg;
+      if (memoryOps !== undefined) output.memoryOps = memoryOps;
+      if (rejected.length) output.warnings = rejected;
+      if (viewCommands.length) output.viewCommands = viewCommands;
+      const runResult: RunResult = { actions, viewCommands, input: record!, output, ms, memoryOps };
+      commit?.(runResult);
+      return runResult;
+    });
   } catch (err) {
     // If we failed before assembling (e.g. daemon down), build a record now so
     // the exchange is still auditable.
