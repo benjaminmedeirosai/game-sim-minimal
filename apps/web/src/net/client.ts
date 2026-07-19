@@ -161,6 +161,22 @@ export function reconnect(): void {
   if (clientName) connect(clientName, clientAllowOthers);
 }
 
+/** Leave the current room session and return to the join screen. The saved
+ * identity remains available there, so this is a deliberate sign-out, not an
+ * account reset. */
+export function returnToLogin(): void {
+  stopPinging();
+  if (cameraTimer) clearTimeout(cameraTimer);
+  cameraTimer = undefined;
+  conn?.close();
+  conn = undefined;
+  peer?.destroy();
+  peer = undefined;
+  clientName = '';
+  clientAllowOthers = false;
+  net.set({ status: 'idle', roster: [] });
+}
+
 /** Join as `name`. `allowOthers` opens this account's device-enrollment window
  *  (see the protocol note). The device token is pulled from localStorage. */
 export function connect(name: string, allowOthers: boolean): void {

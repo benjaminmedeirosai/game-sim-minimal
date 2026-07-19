@@ -40,7 +40,6 @@ import type {
   World,
   WorldSettings,
 } from '@game/shared';
-import type { ConversationTurn } from '@game/shared';
 import { ollama } from './ai/client.js';
 import {
   ORCHESTRATOR_AGENT,
@@ -48,6 +47,7 @@ import {
   runOrchestrator,
 } from './ai/orchestrator/index.js';
 import { replayMessages } from './ai/orchestrator/prompt.js';
+import { parseResponse } from './ai/orchestrator/parse.js';
 import type { RunResult } from './ai/orchestrator/index.js';
 import { applyMemoryOps, memoryChanged } from './ai/orchestrator/memory.js';
 import { DEFAULT_VOICE, isVoiceId } from './ai/orchestrator/voice.js';
@@ -99,11 +99,6 @@ async function hostResources(): Promise<HostResources> {
 // How many recent conversation turns to feed back to the model as short-term
 // memory (a player referring to "that" or "the one I mentioned"). A "turn" is a
 // single line (one command OR one AI reply), so this is roughly half as many
-// exchanges. Kept generous — these models have plenty of context headroom and
-// the turns are short, so a longer window costs little and lets players refer
-// back across a real conversation rather than just the last couple of messages.
-const CONVERSATION_TURNS = 40;
-
 const DEFAULT_SETTINGS: WorldSettings = { width: 48, height: 48, seed: 1337, zoom: 20 };
 
 // When a tick's real work exceeds this multiple of its budget we stop trying
@@ -477,16 +472,11 @@ export class Host {
     if (this.dirty) this.save();
   }
 
-  /** The recent shared-chat turns for the model: each exchange contributes the
-   *  submitter's command and the AI's reply (when it made one), oldest first. */
-  private recentConversation(): ConversationTurn[] {
+  /** Complete prior model exchanges become real user/assistant messages. The
+   * newest user turn alone carries the current world snapshot. */
+  private recentConversation(): AiExchange[] {
     const list = this.aiHistory.get(ORCHESTRATOR_AGENT) ?? [];
-    const turns: ConversationTurn[] = [];
-    for (const x of list) {
-      turns.push({ who: x.input.onBehalfOf ?? 'someone', text: x.input.command });
-      if (x.output.msg) turns.push({ who: 'AI', text: x.output.msg });
-    }
-    return turns.slice(-CONVERSATION_TURNS);
+    return list.slice(-12);
   }
 
   /** Record what a player currently sees on screen, from their `camera` report.
@@ -725,7 +715,7 @@ export class Host {
     };
     this.recordAiTest(agent, result);
     try {
-      const { text, ms, stats } = await ollama.chat(replayMessages(exchange.input.parts), {
+      const { text, ms, stats, rawRequest, rawResponse } = await ollama.chat(replayMessages(exchange.input), {
         model: settings.model,
         keepAlive: settings.keepAlive,
         think: settings.think,
@@ -735,7 +725,14 @@ export class Host {
           this.updateAiTest(agent, result);
         },
       });
-      Object.assign(result, { text, ms, stats, status: 'complete' as const });
+      const parsed = exchange.input.validationWorld
+        ? parseResponse(text, exchange.input.validationWorld)
+        : undefined;
+      Object.assign(result, {
+        text, ms, rawRequest, rawResponse, stats,
+        ...(parsed ? { validation: { actions: parsed.actions.length, views: parsed.viewCommands.length, rejected: parsed.rejected } } : {}),
+        status: 'complete' as const,
+      });
       return this.updateAiTest(agent, result);
     } catch (err) {
       Object.assign(result, { error: (err as Error).message, status: 'complete' as const });
@@ -755,6 +752,11 @@ export class Host {
       settings: { model: exchange.output.stats?.model ?? ollama.model, keepAlive: '—', think: false, options: {} },
       text: exchange.output.raw,
       ms: exchange.ms,
+      validation: {
+        actions: exchange.output.actions.length,
+        views: exchange.output.viewCommands?.length ?? 0,
+        rejected: exchange.output.warnings ?? [],
+      },
       stats: exchange.output.stats,
     });
   }
@@ -785,11 +787,17 @@ export class Host {
   /** Build the aiHistory reply for a requested agent (history + prompt config
    *  + the roster of known agents for the window's selector). */
   aiHistoryMsg(agent: string, roster: string[] = []): HostMsg {
+    // Keep full validation worlds on the host/save, not in every browser's
+    // History payload.
+    const exchanges = (this.aiHistory.get(agent) ?? []).map(({ input, ...exchange }) => {
+      const { validationWorld: _validationWorld, ...publicInput } = input;
+      return { ...exchange, input: publicInput };
+    });
     return {
       m: 'aiHistory',
       agent,
       agents: [ORCHESTRATOR_AGENT],
-      exchanges: this.aiHistory.get(agent) ?? [],
+      exchanges,
       // Preview matches what the AI actually sees: same fogged world, live
       // roster, recent conversation, and saved memory the real call assembles.
       config: orchestratorConfig(fogWorld(this.world), {

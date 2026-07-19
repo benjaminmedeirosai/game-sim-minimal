@@ -1,7 +1,7 @@
 // Prompt assembly for the game orchestrator. Ordered for Ollama's prompt cache:
 // the STABLE prefix (role + action schema + registry ids) comes first and is
-// byte-identical across calls; only the world snapshot and the user command —
-// the LAST parts — change. That maximizes KV-cache reuse on a warm model.
+// byte-identical across calls. Complete prior user/assistant turns follow it,
+// and only the final user message carries the current world state and command.
 import {
   BASE_TPS,
   BUILDINGS,
@@ -23,8 +23,9 @@ import {
 } from '@game/shared';
 import type {
   AiPromptPart,
+  AiPromptMessage,
+  AiExchange,
   Coord,
-  ConversationTurn,
   PlayerCameraView,
   World,
 } from '@game/shared';
@@ -145,6 +146,10 @@ function rolePrompt(): string {
     '  msg <text>           a SHORT one-line reply to the player',
     '  <action> <args...>   a plan step — the exact forms are in the "Actions" section',
     '  mem <op> <args...>   an OPTIONAL memory edit (rare — see "Memory")',
+    '',
+    'Host feedback and the current world state in the latest user message are',
+    'authoritative. Earlier assistant messages are historical proposals only;',
+    'never assume an action succeeded unless the latest host state confirms it.',
     '',
     'Order does not matter and any line may be omitted. Emit only the lines you',
     'need — often just an action line or two, sometimes a single msg. Emitting NO',
@@ -503,9 +508,38 @@ export function commandContext(command: string, submitter?: string): string {
 
 /** The last few conversation turns so the model has short-term memory (a player
  *  can say "do that again" or "the one I mentioned"). */
-export function historyContext(history: ConversationTurn[]): string {
+export function historyContext(history: AiExchange[]): string {
   if (history.length === 0) return '(no earlier messages)';
-  return history.map((t) => `${t.who}: ${t.text}`).join('\n');
+  return history.map((x) => `${x.input.onBehalfOf ?? 'someone'}: ${x.input.command}\nAI:\n${x.output.raw}`).join('\n\n');
+}
+
+/** Host-authored feedback belongs in the following user turn, never inside the
+ * assistant's historical response. The latest world snapshot remains the
+ * authority on eventual action completion. */
+function hostFeedback(x: AiExchange): string {
+  const lines = ['Host feedback on the preceding assistant response:'];
+  if (x.output.error) lines.push(`- Model request failed: ${x.output.error}`);
+  if (x.output.warnings?.length) lines.push(...x.output.warnings.map((w) => `- Rejected: ${w}`));
+  if (x.output.actions.length) lines.push(`- ${x.output.actions.length} action(s) accepted for dispatch; check the current world state for their outcome.`);
+  else if (!x.output.error && !x.output.warnings?.length) lines.push('- No executable actions were proposed.');
+  return lines.join('\n');
+}
+
+function historicalTurnMessages(history: AiExchange[], index: number): AiPromptMessage[] {
+  const x = history[index];
+  const feedback = index > 0 ? `${hostFeedback(history[index - 1])}\n\n` : '';
+  return [
+    { role: 'user', content: `${feedback}Player command from ${x.input.onBehalfOf ?? 'someone'}:\n${x.input.command}` },
+    { role: 'assistant', content: x.output.raw || '(no response)' },
+  ];
+}
+
+function historicalMessages(history: AiExchange[]): AiPromptMessage[] {
+  return history.flatMap((_, index) => historicalTurnMessages(history, index));
+}
+
+function messageTranscript(messages: AiPromptMessage[]): string {
+  return messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join('\n\n');
 }
 
 /** The persistent memory: standing player preferences the model chose to keep,
@@ -525,8 +559,8 @@ export interface AssembleInput {
   submitter?: string;
   /** Names of players currently online. */
   roster?: string[];
-  /** Recent conversation turns (oldest first). */
-  history?: ConversationTurn[];
+  /** Prior complete exchanges (oldest first), rendered as role-tagged history. */
+  history?: AiExchange[];
   /** Standing player preferences saved across calls (the model amends these). */
   memory?: string[];
   /** What each online player currently sees on screen (for orientation). */
@@ -541,21 +575,11 @@ export interface AssembleInput {
  *  is omitted this yields the Config-tab template.
  *
  *  Ordering is tuned for Ollama's prefix KV-cache, which reuses the longest
- *  IDENTICAL token prefix across calls and re-evaluates everything from the
- *  first changed token onward. So sections are laid out by how RELIABLY each
- *  changes between two consecutive commands, least-changing first:
- *    System (never) → Voice (only when the player switches style, rare) →
- *    Memory (rare) → Players (roster only, rare) → World
- *    (only when units actually move/harvest — often identical at rest) →
- *    Player views (changes when someone pans — small) → Conversation (grows by
- *    one turn on EVERY command) → Command (submitter + text; every call, tiny).
- *  The subtlety: the conversation is the more reliable cache-buster — it gains a
- *  turn on every command — whereas the world is frequently unchanged between
- *  commands. So the world goes AHEAD of the conversation: when units are idle,
- *  the whole (large) world block stays cached and only the new chat turn +
- *  command re-evaluate (measured ~150ms vs ~2700ms for the reverse order). When
- *  units are moving both orders re-evaluate the world anyway, so this is never
- *  worse. The per-command submitter line rides with the command in the tail. */
+ *  IDENTICAL token prefix across calls and re-evaluates from the first changed
+ *  token onward. The stable system message is followed by complete historical
+ *  user/assistant turns. Each later request appends one more exchange, so those
+ *  turns stay reusable even when the current world snapshot changes. The final
+ *  user message carries host feedback, live state, and the new command. */
 export function assemble(
   world: World,
   input: AssembleInput = {},
@@ -580,9 +604,17 @@ export function assemble(
   const ctx = worldContext(world);
   const players = rosterContext(roster);
   const views = playerViewsContext(cameras);
-  const convo = historyContext(history);
   const cmd = commandContext(command ?? '<the player command goes here>', submitter);
 
+  const prior = historicalMessages(history);
+  const feedback = history.length ? `${hostFeedback(history.at(-1)!)}\n\n` : '';
+  const historyParts: AiPromptPart[] = history.map((x, index) => ({
+    label: `Turn ${x.id}`,
+    content: messageTranscript(historicalTurnMessages(history, index)),
+    // The newest historical turn was the previous request's dynamic user tail.
+    // Older complete turns are an identical KV prefix.
+    volatility: index === history.length - 1 ? 'rollingPrefix' : 'stable',
+  }));
   // Each part is tagged with how reliably it changes call-to-call — the same
   // property the ordering above is built on — so the Config UI can show a KV
   // badge per section and predict the cache boundary. 'stable' = never/rarely
@@ -594,15 +626,17 @@ export function assemble(
     { label: 'World reference', content: worldRef, volatility: 'stable' },
     { label: 'Recipes', content: recipes, volatility: 'stable' },
     ...(voiceText ? [{ label: 'Voice', content: voiceText, volatility: 'stable' as const }] : []),
+    ...(history.length ? [{ label: 'Prior role history', content: messageTranscript(prior), children: historyParts, volatility: 'rollingPrefix' as const }] : []),
+    ...(feedback ? [{ label: 'Host feedback', content: feedback.trim(), volatility: 'live' as const }] : []),
     { label: 'Memory', content: mem, volatility: 'occasional' },
     { label: 'Players', content: players, volatility: 'occasional' },
     { label: 'World context', content: ctx, volatility: 'live' },
     { label: 'Player views', content: views, volatility: 'live' },
-    { label: 'Recent conversation', content: convo, volatility: 'live' },
     { label: 'Command', content: cmd, volatility: 'live' },
   ];
 
   const userContent = [
+    feedback,
     'Memory (standing player preferences):',
     mem,
     '',
@@ -613,25 +647,25 @@ export function assemble(
     'Player views (what each player currently sees on screen):',
     views,
     '',
-    'Recent conversation:',
-    convo,
-    '',
     cmd,
   ].join('\n');
 
   const messages: ChatMessage[] = [
     { role: 'system', content: sysContent },
+    ...prior,
     { role: 'user', content: userContent },
   ];
 
-  const raw = parts.map((p) => `### ${p.label}\n${p.content}`).join('\n\n');
+  const raw = messages.map((m) => `### ${m.role.toUpperCase()}\n${m.content}`).join('\n\n');
   return { messages, raw, parts };
 }
 
 /** Rebuild the original chat-message roles from an exchange's recorded prompt
  * parts. Used by Test Suite so a replay is byte-for-byte equivalent to the
  * saved system/user prompt, rather than flattening it into one user message. */
-export function replayMessages(parts: AiPromptPart[]): ChatMessage[] {
+export function replayMessages(input: AiExchange['input']): ChatMessage[] {
+  if (input.messages?.length) return input.messages;
+  const parts = input.parts;
   const byLabel = new Map(parts.map((p) => [p.label, p.content]));
   const need = (label: string): string => byLabel.get(label) ?? '';
   const sys = ['System', 'Actions', 'World reference', 'Recipes']

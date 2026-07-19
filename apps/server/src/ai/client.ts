@@ -67,7 +67,7 @@ export function chatSettings(opts: ChatOptions = {}): AiSettings {
  *  surface. Durations are nanoseconds; counts are whole tokens. */
 interface OllamaChatResponse {
   model?: string;
-  message?: { content?: string };
+  message?: { content?: string; thinking?: string };
   done_reason?: string;
   total_duration?: number;
   load_duration?: number;
@@ -296,28 +296,33 @@ class OllamaClient {
 
   private async rawChat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatResult> {
     const started = Date.now();
+    const request = {
+      model: opts.model ?? this.currentModel,
+      messages,
+      stream: false,
+      keep_alive: opts.keepAlive ?? KEEP_ALIVE,
+      think: opts.think ?? false,
+      options: requestOptions(opts),
+    };
+    const rawRequest = JSON.stringify(request, null, 2);
     const res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: opts.model ?? this.currentModel,
-        messages,
-        stream: false,
-        keep_alive: opts.keepAlive ?? KEEP_ALIVE,
-        think: opts.think ?? false,
-        options: requestOptions(opts),
-      }),
+      body: rawRequest,
     });
     if (!res.ok) {
       throw new Error(`Ollama /api/chat ${res.status}: ${await res.text()}`);
     }
-    const data = (await res.json()) as OllamaChatResponse;
+    const rawResponse = await res.text();
+    const data = JSON.parse(rawResponse) as OllamaChatResponse;
     const evalCount = data.eval_count;
     const evalDur = data.eval_duration; // ns
     const promptCount = data.prompt_eval_count;
     const promptDur = data.prompt_eval_duration;
     return {
       text: data.message?.content ?? '',
+      rawRequest,
+      rawResponse,
       ms: Date.now() - started,
       stats: {
         model: data.model,

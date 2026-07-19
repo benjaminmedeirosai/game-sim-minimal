@@ -1,4 +1,4 @@
-import { net } from '../net/client';
+import { net, returnToLogin } from '../net/client';
 import type { NetState } from '../net/client';
 
 function roleTag(p: NetState['roster'][number]): string {
@@ -28,6 +28,9 @@ export function mountRoom(el: HTMLElement): void {
                 .join('')
             : '<li class="empty">No peers yet.</li>'
         }
-      </ul>`;
+      </ul>
+      <button class="btn btn-ghost room-return" data-return-to-login${s.status === 'connected' ? '' : ' disabled'}>Return to login</button>`;
+
+    el.querySelector<HTMLButtonElement>('[data-return-to-login]')?.addEventListener('click', returnToLogin);
   });
 }

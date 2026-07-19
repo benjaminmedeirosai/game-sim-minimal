@@ -11,7 +11,6 @@ import type {
   Action,
   AiConfigView,
   AiExchange,
-  ConversationTurn,
   MemoryOp,
   PlayerCameraView,
   ViewCommand,
@@ -49,7 +48,7 @@ export interface OrchestratorContext {
   /** Names of players currently online (for the model's context). */
   roster?: string[];
   /** Recent conversation turns so the model has short-term memory. */
-  history?: ConversationTurn[];
+  history?: AiExchange[];
   /** The colony's saved memory (standing player preferences) at send-time. */
   memory?: string[];
   /** What each online player currently sees on screen, so the model can orient
@@ -98,7 +97,7 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
       cameras,
       voice,
     });
-    record = { command, onBehalfOf: submitter, raw, parts };
+    record = { command, onBehalfOf: submitter, raw, parts, messages, validationWorld: world };
     return messages;
   };
 
@@ -106,9 +105,10 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
     // parse + commit run INSIDE the serial queue slot (see chatDeferred): the
     // exchange must land in conversation history before the next queued command
     // builds its prompt, or two back-to-back commands assemble identical ones.
-    return await ollama.chatDeferred(build, ORCHESTRATOR_OPTS, ({ text, ms, stats }) => {
+    return await ollama.chatDeferred(build, ORCHESTRATOR_OPTS, ({ text, ms, stats, rawRequest, rawResponse }) => {
+      record!.rawRequest = rawRequest;
       const { actions, viewCommands, rejected, msg, memoryOps } = parseResponse(text, worldAtSend!);
-      const output: AiExchange['output'] = { raw: text, actions, stats };
+      const output: AiExchange['output'] = { raw: text, rawResponse, actions, stats };
       if (msg) output.msg = msg;
       if (memoryOps !== undefined) output.memoryOps = memoryOps;
       if (rejected.length) output.warnings = rejected;
@@ -122,7 +122,7 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
     // the exchange is still auditable.
     if (!record) {
       const { world, roster = [], history = [], memory = [], cameras = [], voice } = context();
-      const { raw, parts } = assemble(world, {
+      const { raw, parts, messages } = assemble(world, {
         command,
         submitter,
         roster,
@@ -131,7 +131,7 @@ export async function runOrchestrator(input: RunOrchestratorInput): Promise<RunR
         cameras,
         voice,
       });
-      record = { command, onBehalfOf: submitter, raw, parts };
+      record = { command, onBehalfOf: submitter, raw, parts, messages, validationWorld: world };
     }
     return {
       actions: [],
@@ -152,7 +152,7 @@ export function orchestratorConfig(
   ctx: {
     memory?: string[];
     roster?: string[];
-    history?: ConversationTurn[];
+    history?: AiExchange[];
     cameras?: PlayerCameraView[];
     voice?: string;
   } = {},

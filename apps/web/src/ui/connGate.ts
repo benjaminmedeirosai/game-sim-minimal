@@ -28,6 +28,12 @@ export function mountConnGate(el: HTMLElement): void {
     el.querySelector<HTMLButtonElement>('#gate-retry')?.addEventListener('click', () => reconnect());
     wireJoinForm(el);
   });
+
+  // Returning players already have a device token and last-used character in
+  // local storage, so reconnect directly instead of making a refresh look like
+  // a fresh login. A rejected/unreachable attempt still lands on the gate.
+  const name = savedName().trim();
+  if (name) connect(name, savedAllowOthers());
 }
 
 /** Wire the join form: the player picker toggles the name field (existing

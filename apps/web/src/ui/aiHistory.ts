@@ -40,7 +40,7 @@ import {
 import { actionStatusMark } from './attribution';
 import { closeLayer, openLayer } from './escStack';
 import { setActive } from '../state/activeSurface';
-import { setUi } from '../state/uiState';
+import { setUi, uiState } from '../state/uiState';
 
 function esc(s: string): string {
   return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
@@ -50,7 +50,7 @@ function esc(s: string): string {
  * scroll container inside this wrapper prevents long unwrapped lines from
  * contributing their intrinsic width to the surrounding details/card layout. */
 function codeBlock(content: string): string {
-  return `<div class="ai-code"><button class="ai-code-copy" type="button" title="Copy to clipboard" aria-label="Copy code block">Copy</button><pre>${esc(content)}</pre></div>`;
+  return `<div class="ai-code"><button class="ai-code-copy" type="button" title="Copy to clipboard" aria-label="Copy code block">Copy</button><pre data-ai-scroll="code-${outputFingerprint(content)}">${esc(content)}</pre></div>`;
 }
 
 /** A compact comparison label for model output. It is deliberately lossy
@@ -94,11 +94,13 @@ function statusIndex(log: ActionRecord[]): Map<string, ActionStatus> {
 export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   let isOpen = false;
   let current = 'orchestrator';
-  let tab: 'history' | 'config' | 'memory' | 'test' = 'history';
+  let tab: 'history' | 'config' | 'memory' | 'test' = uiState.get().aiTab;
   let testStage: AiTestSettings | undefined;
   let testExchangeId: number | undefined;
   let testSubmitLabel: string | undefined;
   let testSubmitTimer: number | undefined;
+  let testOutputsExpanded = false;
+  const testRunShortcut = /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? '⌘↵' : 'Ctrl+↵';
   // Config View-Pretty sections longer than this (chars) render collapsed by
   // default, so the long ones (System, World, Voice) don't bury the rest.
   const COLLAPSE_THRESHOLD = 200;
@@ -132,9 +134,98 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     </div>`;
   root.appendChild(overlay);
 
+  const testDetailOverlay = document.createElement('div');
+  testDetailOverlay.className = 'modal-overlay ai-test-detail-overlay';
+  testDetailOverlay.hidden = true;
+  testDetailOverlay.innerHTML = `
+    <div class="modal-ai modal-ai-test-detail" role="dialog" aria-label="API request and response">
+      <header class="modal-head"><h2 class="modal-title">API request / response</h2><span class="spacer"></span><button class="icon-btn" data-ai-test-detail-close title="Close">✕</button></header>
+      <div class="modal-body ai-test-detail-body"></div>
+    </div>`;
+  root.appendChild(testDetailOverlay);
+
   const select = overlay.querySelector<HTMLSelectElement>('#ai-select')!;
   const body = overlay.querySelector<HTMLElement>('#ai-body')!;
   const tabs = overlay.querySelector<HTMLElement>('#ai-tabs')!;
+  const testDetailBody = testDetailOverlay.querySelector<HTMLElement>('.ai-test-detail-body')!;
+  let testDetail: { label: string; rawRequest?: string; rawResponse?: string } | undefined;
+  let testDetailPretty = uiState.get().aiTestDetailPretty;
+
+  function closeTestDetail(): void {
+    testDetailOverlay.hidden = true;
+    testDetail = undefined;
+    closeLayer('ai-test-detail');
+  }
+
+  function renderTestDetail(): void {
+    if (!testDetail) return;
+    const { label, rawRequest, rawResponse } = testDetail;
+    const format = (value: string | undefined): string | undefined => {
+      if (!value || !testDetailPretty) return value;
+      try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
+    };
+    const raw = (label: string, value: string | undefined): string =>
+      `<section class="ai-test-detail-section"><h3>${label}</h3><pre>${esc(value ?? 'Not available for this recorded/original result.')}</pre></section>`;
+    testDetailBody.innerHTML = `<div class="ai-test-detail-top"><p class="ai-test-detail-meta">${esc(label)}</p><div class="ai-test-detail-format"><button class="seg${testDetailPretty ? '' : ' active'}" data-ai-test-detail-format="raw">Raw</button><button class="seg${testDetailPretty ? ' active' : ''}" data-ai-test-detail-format="pretty">Pretty JSON</button></div></div>` +
+      raw('Request', format(rawRequest)) + raw('Response', format(rawResponse));
+  }
+
+  function openTestDetail(result: AiTestResult, testNumber: number): void {
+    testDetail = { label: `Test #${testNumber} · request ${result.exchangeId}`, rawRequest: result.rawRequest, rawResponse: result.rawResponse };
+    renderTestDetail();
+    testDetailOverlay.hidden = false;
+    openLayer('ai-test-detail', closeTestDetail);
+  }
+
+  function openApiViewer(label: string, rawRequest: string | undefined, rawResponse: string | undefined): void {
+    testDetail = { label, rawRequest, rawResponse };
+    renderTestDetail();
+    testDetailOverlay.hidden = false;
+    openLayer('ai-test-detail', closeTestDetail);
+  }
+
+  testDetailOverlay.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+    const format = target.closest<HTMLButtonElement>('[data-ai-test-detail-format]');
+    if (format) {
+      testDetailPretty = format.dataset.aiTestDetailFormat === 'pretty';
+      setUi({ aiTestDetailPretty: testDetailPretty });
+      renderTestDetail();
+      return;
+    }
+    if (e.target === testDetailOverlay || target.closest('[data-ai-test-detail-close]')) closeTestDetail();
+  });
+
+  type ScrollPosition = { left: number; top: number };
+
+  // AI data arrives asynchronously and the active tab is rebuilt from strings.
+  // Preserve the modal's position plus explicitly marked rebuilt scrollers.
+  function captureScroll(): { body: ScrollPosition; nested: Map<string, ScrollPosition[]> } {
+    const nested = new Map<string, ScrollPosition[]>();
+    body.querySelectorAll<HTMLElement>('[data-ai-scroll]').forEach((el) => {
+      const key = el.dataset.aiScroll!;
+      const positions = nested.get(key) ?? [];
+      positions.push({ left: el.scrollLeft, top: el.scrollTop });
+      nested.set(key, positions);
+    });
+    return { body: { left: body.scrollLeft, top: body.scrollTop }, nested };
+  }
+
+  function restoreScroll(snapshot: ReturnType<typeof captureScroll>): void {
+    body.scrollLeft = snapshot.body.left;
+    body.scrollTop = snapshot.body.top;
+    const offsets = new Map<string, number>();
+    body.querySelectorAll<HTMLElement>('[data-ai-scroll]').forEach((el) => {
+      const key = el.dataset.aiScroll!;
+      const index = offsets.get(key) ?? 0;
+      const position = snapshot.nested.get(key)?.[index];
+      if (position) {
+        el.scrollLeft = position.left;
+        el.scrollTop = position.top;
+      }
+      offsets.set(key, index + 1);
+    });
+  }
 
   // --- rendering ---------------------------------------------------------
 
@@ -284,8 +375,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       views +
       warn +
       `<div class="ai-xcol"><span class="ai-lbl">Actions (${x.output.actions.length})</span>${acts}${err}</div>` +
-      `<details class="ai-raw"><summary>model output</summary>${codeBlock(x.output.raw || '(empty)')}</details>` +
-      `<details class="ai-raw"><summary>prompt sent</summary>${codeBlock(x.input.raw)}</details>` +
+      `<div class="ai-raw"><div class="ai-raw-head"><span class="ai-lbl">model output</span><button class="seg ai-api-view" data-ai-api-view-exchange="${x.id}">View API request/response</button></div>${codeBlock(x.output.raw || '(empty)')}</div>` +
       `</div>`
     );
   }
@@ -354,17 +444,9 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       model: config.settings.model,
       keepAlive: config.settings.keepAlive,
       think: config.settings.think,
-      options: {
-        temperature: Number(config.settings.options.temperature ?? 0.6),
-        top_k: Number(config.settings.options.top_k ?? 40),
-        top_p: Number(config.settings.options.top_p ?? 0.9),
-        min_p: Number(config.settings.options.min_p ?? 0),
-        repeat_penalty: Number(config.settings.options.repeat_penalty ?? 1.1),
-        repeat_last_n: Number(config.settings.options.repeat_last_n ?? 64),
-        seed: Number(config.settings.options.seed ?? 0),
-        num_predict: Number(config.settings.options.num_predict ?? 256),
-        num_ctx: Number(config.settings.options.num_ctx ?? 8192),
-      },
+      options: Object.fromEntries(
+        Object.entries(config.settings.options).filter(([, value]) => typeof value === 'number' && Number.isFinite(value)),
+      ) as Record<string, number>,
     };
   }
 
@@ -381,6 +463,10 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const options = { ...base.options };
     for (const input of body.querySelectorAll<HTMLInputElement>('[data-test-option]')) {
       const key = input.dataset.testOption;
+      if (input.value === '') {
+        if (key) delete options[key];
+        continue;
+      }
       const value = Number(input.value);
       if (!key || !Number.isFinite(value)) return undefined;
       options[key] = value;
@@ -394,10 +480,10 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const selected = testExchangeId ?? exchanges.at(-1)?.id;
     const source = exchanges.find((x) => x.id === selected);
     const tags = config.models.includes(stage.model) ? config.models : [stage.model, ...config.models];
-    const option = (name: string, label: string, description: string, min: number, max: number, step: number, cache = false) =>
+    const option = (name: string, label: string, description: string, min: number, max: number, step: number, placeholder: string, cache = false) =>
       `<label class="ai-test-field"><span title="${description}">${label}${cache ? ' <i title="Changing this value starts a new model context and clears the KV cache.">◌</i>' : ''}</span>` +
-      `<input data-test-option="${name}" type="number" min="${min}" max="${max}" step="${step}" value="${stage.options[name]}"></label>`;
-    const result = testResults.length ? testResultTable(testResults, defaultTestStage(config)) : '';
+      `<input data-test-option="${name}" type="number" min="${min}" max="${max}" step="${step}" value="${stage.options[name] ?? ''}" placeholder="${placeholder}" title="Estimated model default. Leave empty to omit this option. ${description}"></label>`;
+    const result = testResults.length ? testResultTable(testResults, defaultTestStage(config), testOutputsExpanded) : '';
     return `<section class="ai-test-suite">` +
       `<div class="ai-test-intro"><div><h3>Test data</h3><p>Replays a recorded prompt and stops at raw model output. No actions, memory edits, or history writes occur.</p></div>` +
       `<select class="ai-test-exchange" title="Recorded request to replay">` +
@@ -406,7 +492,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
         : `<option value="">No recorded requests</option>`) +
       `</select>` +
       (source
-        ? `<div class="ai-test-originals"><details><summary>prompt sent</summary>${codeBlock(source.input.raw)}</details></div>`
+        ? `<div class="ai-test-originals"><button class="seg" data-ai-api-view-exchange="${source.id}">View API request/response</button></div>`
         : '') +
       `</div>` +
       `<div class="ai-test-run"><div class="ai-test-head"><h3>Run settings</h3><span>temporary · not saved</span></div>` +
@@ -414,23 +500,24 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       `<label class="ai-test-field"><span title="The Ollama model used for this one replay. A different model has a separate KV cache and may need to load.">model <i title="A different model has a separate KV cache and may need to load.">◌</i></span><select data-test-model>${tags.map((m) => `<option value="${esc(m)}"${m === stage.model ? ' selected' : ''}>${esc(m)}</option>`).join('')}</select></label>` +
       `<label class="ai-test-field"><span title="Requests separate model reasoning output when supported. Higher levels ask for more reasoning.">thinking</span><select data-test-think><option value="false"${stage.think === false ? ' selected' : ''}>off</option><option value="true"${stage.think === true ? ' selected' : ''}>on</option><option value="low"${stage.think === 'low' ? ' selected' : ''}>low</option><option value="medium"${stage.think === 'medium' ? ' selected' : ''}>medium</option><option value="high"${stage.think === 'high' ? ' selected' : ''}>high</option></select></label>` +
       `<label class="ai-test-field"><span title="How long Ollama keeps this model loaded after the replay. 0 unloads it immediately.">keep alive</span><select data-test-keep-alive>${['0', '5m', '30m', '60m'].map((v) => `<option value="${v}"${v === stage.keepAlive ? ' selected' : ''}>${v}</option>`).join('')}</select></label>` +
-      option('temperature', 'temperature', 'Controls sampling randomness. Lower is more deterministic; higher is more varied.', 0, 2, 0.05) +
-      option('top_k', 'top k', 'Limits sampling to the K most likely next tokens.', 1, 200, 1) +
-      option('top_p', 'top p', 'Limits sampling to the smallest probability mass whose total reaches P.', 0, 1, 0.05) +
-      option('min_p', 'min p', 'Discards tokens whose probability is too small relative to the most likely token.', 0, 1, 0.01) +
-      option('repeat_penalty', 'repeat penalty', 'Penalizes recently repeated tokens. Above 1 discourages repetition.', 0, 2, 0.05) +
-      option('repeat_last_n', 'repeat last n', 'How many recent tokens repetition penalty considers. -1 uses the full context.', -1, 8192, 1) +
-      option('seed', 'seed (0=random)', 'Fixed seeds make sampling reproducible; 0 chooses a random seed.', 0, 2147483647, 1) +
-      option('num_predict', 'max tokens', 'Maximum number of tokens the model may generate. -1 allows generation until it stops.', -1, 4096, 1) +
-      option('num_ctx', 'context window', 'Maximum context length in tokens. Changing it starts a new model context and clears the KV cache.', 512, 32768, 512, true) +
-      `</div><button class="btn ai-test-run-btn${testSubmitLabel ? ' ai-test-run-btn-sent' : ''}" data-ai-test-run${exchanges.length && !testSubmitLabel ? '' : ' disabled'}>${testSubmitLabel ?? 'Run test'}</button></div>` +
+      option('temperature', 'temperature', 'Controls sampling randomness. Lower is more deterministic; higher is more varied.', 0, 2, 0.05, '0.6') +
+      option('top_k', 'top k', 'Limits sampling to the K most likely next tokens.', 1, 200, 1, '40') +
+      option('top_p', 'top p', 'Limits sampling to the smallest probability mass whose total reaches P.', 0, 1, 0.05, '0.9') +
+      option('min_p', 'min p', 'Discards tokens whose probability is too small relative to the most likely token.', 0, 1, 0.01, '0') +
+      option('repeat_penalty', 'repeat penalty', 'Penalizes recently repeated tokens.', 0, 2, 0.05, '1.1') +
+      option('repeat_last_n', 'repeat last n', 'How many recent tokens repetition penalty considers.', -1, 8192, 1, '64') +
+      option('seed', 'seed', 'Fixed seeds make sampling reproducible. Leave empty to let Ollama choose a random seed.', 0, 2147483647, 1, '0') +
+      option('num_predict', 'max tokens', 'Maximum number of tokens the model may generate.', -1, 4096, 1, '-1') +
+      option('num_ctx', 'context window', 'Maximum context length in tokens. Changing it starts a new model context and clears the KV cache.', 512, 32768, 512, '8192', true) +
+      `</div><div class="ai-test-run-actions"><button class="btn ai-test-run-btn${testSubmitLabel ? ' ai-test-run-btn-sent' : ''}" data-ai-test-run${exchanges.length && !testSubmitLabel ? '' : ' disabled'}>${testSubmitLabel ?? 'Run test'}</button><span class="ai-test-run-shortcut"><kbd>${testRunShortcut}</kbd> to run</span></div></div>` +
       `<section class="ai-test-results"><div class="ai-test-results-head"><h3>Results</h3><div class="ai-test-result-actions">` +
+      `<button class="seg ai-test-output-toggle" data-ai-test-output-toggle${testResults.length ? '' : ' disabled'}>${testOutputsExpanded ? 'Collapse outputs' : 'Expand all outputs'}</button>` +
       `<button class="seg ai-test-copy" data-ai-test-copy${testResults.length ? '' : ' disabled'}>Copy</button>` +
       `<button class="seg ai-test-clear" data-ai-test-clear${testResults.length ? '' : ' disabled'}>Clear</button>` +
       `</div></div>${result || `<p class="ai-test-empty">Choose a recorded request and run it with staged settings.</p>`}</section></section>`;
   }
 
-  function testResultTable(results: AiTestResult[], base: AiTestSettings): string {
+  function testResultTable(results: AiTestResult[], base: AiTestSettings, outputsExpanded: boolean): string {
     const cell = (value: string | number | undefined): string => value == null ? '—' : esc(String(value));
     const duration = (ms: number | undefined): string =>
       ms == null ? '—' : `${(Math.round(ms / 10) / 100).toFixed(2)}s`;
@@ -451,22 +538,33 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const submitted = (at: number): string => new Date(at).toLocaleTimeString([], {
       hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
     });
-    return `<div class="ai-test-table"><table class="ai-test-table-inner"><thead><tr><th>submitted</th><th>request id</th><th>state</th><th>model</th><th>settings Δ</th><th>total</th><th>load</th>` +
-      `<th>prompt s</th><th>prompt tok</th><th>prompt tok/s</th><th>eval s</th><th>eval tok</th><th>eval tok/s</th><th>model output</th></tr></thead><tbody>` +
-      results.map((result) => {
+    return `<div class="ai-test-table" data-ai-scroll="test-results"><table class="ai-test-table-inner"><thead><tr><th>test #</th><th>submitted</th><th>request id</th><th>state</th><th>model</th><th>settings Δ</th><th>total</th><th>load</th>` +
+      `<th>prompt s</th><th>prompt tok</th><th>prompt tok/s</th><th>eval s</th><th>eval tok</th><th>eval tok/s</th><th>model output</th><th>validation</th></tr></thead><tbody>` +
+      results.map((result, index) => {
+        const testNumber = index + 1;
         const isOriginal = result.original === true;
+        const testId = isOriginal
+          ? `<button class="ai-test-id" data-ai-api-view-exchange="${result.exchangeId}" title="Show the recorded exchange API request and response">#${testNumber}</button>`
+          : `<button class="ai-test-id" data-ai-test-detail="${index}" title="Show the exact Ollama request and response for Test #${testNumber}">#${testNumber}</button>`;
         const state = isOriginal ? 'original' : result.status === 'running' ? 'running' : result.status === 'queued' ? 'queue' : 'complete';
-        if (result.error) return `<tr class="ai-test-error-row"><td>${submitted(result.submittedAt)}</td><td>${cell(result.exchangeId)}</td><td>${state}</td><td>${cell(result.settings.model)}</td><td>${cell(diff(result))}</td><td colspan="9">${cell(result.error)}</td></tr>`;
+        if (result.error) return `<tr class="ai-test-error-row"><td>${testId}</td><td>${submitted(result.submittedAt)}</td><td>${cell(result.exchangeId)}</td><td>${state}</td><td>${cell(result.settings.model)}</td><td>${cell(diff(result))}</td><td colspan="10">${cell(result.error)}</td></tr>`;
         const s = result.stats;
         const waiting = result.status === 'queued' || result.status === 'running';
+        const validation = waiting
+          ? '—'
+          : !result.validation
+            ? `<span class="ai-test-validation-muted">unavailable</span>`
+            : result.validation.rejected.length
+              ? `<span class="ai-test-validation-bad" title="${esc(result.validation.rejected.join('\n'))}">✗ ${result.validation.rejected.length} rejected</span>`
+              : `<span class="ai-test-validation-ok">✓ clean${result.validation.actions || result.validation.views ? ` · ${result.validation.actions} actions` : ''}</span>`;
         const outputSummary = waiting
           ? `<span class="ai-test-state ai-test-state-${result.status}">${state}</span>`
           : `<span class="ai-test-fingerprint" title="Lossy four-character output fingerprint; use matching labels as a quick comparison, then verify the expanded text.">${outputFingerprint(result.text)}</span> ▸ ${result.text.length.toLocaleString()} chars`;
-        return `<tr${isOriginal ? ' class="ai-test-reference"' : ''}><td>${isOriginal ? 'original' : submitted(result.submittedAt)}</td><td>${cell(result.exchangeId)}</td><td><span class="ai-test-state ai-test-state-${result.status ?? 'complete'}">${state}</span></td><td>${cell(s?.model ?? result.settings.model)}</td><td class="ai-test-diff">${isOriginal ? 'recorded request' : cell(diff(result))}</td>` +
+        return `<tr${isOriginal ? ' class="ai-test-reference"' : ''}><td>${testId}</td><td>${isOriginal ? 'original' : submitted(result.submittedAt)}</td><td>${cell(result.exchangeId)}</td><td><span class="ai-test-state ai-test-state-${result.status ?? 'complete'}">${state}</span></td><td>${cell(s?.model ?? result.settings.model)}</td><td class="ai-test-diff">${isOriginal ? 'recorded request' : cell(diff(result))}</td>` +
           `<td>${duration(s?.totalMs ?? result.ms)}</td><td>${duration(s?.loadMs)}</td>` +
           `<td>${duration(s?.promptMs)}</td><td>${cell(s?.promptTokens)}</td><td>${cell(rate(s?.promptTokensPerSec, s?.promptTokens, s?.promptMs))}</td>` +
           `<td>${duration(s?.evalMs)}</td><td>${cell(s?.outputTokens)}</td><td>${cell(rate(s?.tokensPerSec, s?.outputTokens, s?.evalMs))}</td>` +
-          `<td><details><summary>${outputSummary}</summary>${codeBlock(result.text || '(empty)')}</details></td></tr>`;
+          `<td><details${outputsExpanded ? ' open' : ''}><summary>${outputSummary}</summary>${codeBlock(result.text || '(empty)')}</details></td><td>${validation}</td></tr>`;
       }).join('') + `</tbody></table></div>`;
   }
 
@@ -480,6 +578,11 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       cls: 'ai-kv-stable',
       sym: '✓ KV',
       title: 'Stable prefix — byte-identical every call, so it stays in the KV cache and is never re-evaluated.',
+    },
+    rollingPrefix: {
+      cls: 'ai-kv-occasional',
+      sym: '~ KV',
+      title: 'Rolling cached history — turns through N−2 stay in the KV cache. The prior turn is reformatted at the moving tail, so it is re-evaluated.',
     },
     occasional: {
       cls: 'ai-kv-occasional',
@@ -521,6 +624,12 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   // refetch doesn't reset what the reader has expanded.
   function partSection(p: AiPromptPart, cpt: number): string {
     const meta = `${kvBadge(p.volatility)}<span class="ai-part-size">${sizeLabel(p.content.length, cpt)}</span>`;
+    if (p.children?.length) {
+      const open = openParts.has(p.label) ? ' open' : '';
+      return `<details class="ai-part ai-part-fold" data-part="${esc(p.label)}"${open}>` +
+        `<summary><span class="ai-part-label">${esc(p.label)}</span>${meta}</summary>` +
+        `<div class="ai-part-children">${p.children.map((child) => partSection(child, cpt)).join('')}</div></details>`;
+    }
     const pre = codeBlock(p.content);
     if (p.content.length <= COLLAPSE_THRESHOLD) {
       return `<section class="ai-part"><h3>${esc(p.label)}${meta}</h3>${pre}</section>`;
@@ -761,6 +870,24 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
 
   function render(): void {
     const data = aiData.get();
+    const scroll = captureScroll();
+    // Test results and queue state arrive asynchronously. Remember the active
+    // test control before rebuilding the tab so an update doesn't eject the
+    // player from a settings field or lose their text caret.
+    const active = document.activeElement;
+    const focusedTestControl = tab === 'test' && body.contains(active) && active instanceof HTMLInputElement ||
+      tab === 'test' && body.contains(active) && active instanceof HTMLSelectElement
+      ? {
+          option: active.dataset.testOption,
+          marker: active.hasAttribute('data-test-model') ? 'model'
+            : active.hasAttribute('data-test-think') ? 'think'
+              : active.hasAttribute('data-test-keep-alive') ? 'keep-alive'
+                : active.classList.contains('ai-test-exchange') ? 'exchange'
+                  : undefined,
+          selectionStart: active instanceof HTMLInputElement ? active.selectionStart : null,
+          selectionEnd: active instanceof HTMLInputElement ? active.selectionEnd : null,
+        }
+      : undefined;
 
     // Keep the selector in sync with known agents.
     const agents = data.agents.length ? data.agents : [current];
@@ -786,6 +913,19 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
       if (body.contains(active) && active instanceof HTMLInputElement) return;
       body.innerHTML = renderMemory(data.memory, data.memoryLog);
     }
+
+    if (focusedTestControl) {
+      const selector = focusedTestControl.option
+        ? `[data-test-option="${focusedTestControl.option}"]`
+        : focusedTestControl.marker === 'exchange' ? '.ai-test-exchange'
+          : `[data-test-${focusedTestControl.marker}]`;
+      const replacement = body.querySelector<HTMLInputElement | HTMLSelectElement>(selector);
+      replacement?.focus({ preventScroll: true });
+      if (replacement instanceof HTMLInputElement && focusedTestControl.selectionStart != null) {
+        replacement.setSelectionRange(focusedTestControl.selectionStart, focusedTestControl.selectionEnd);
+      }
+    }
+    restoreScroll(scroll);
   }
 
   // --- open/close --------------------------------------------------------
@@ -801,6 +941,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     syncStatusPoll(); // start polling live backend status if on Config
   }
   function close(): void {
+    closeTestDetail();
     isOpen = false;
     overlay.hidden = true;
     closeLayer('ai');
@@ -822,11 +963,18 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     const btn = (e.target as HTMLElement).closest<HTMLElement>('.ai-tab');
     if (!btn) return;
     tab = btn.dataset.tab as 'history' | 'config' | 'memory' | 'test';
+    setUi({ aiTab: tab });
     render();
     syncStatusPoll(); // poll only while the Config tab is showing
   });
   body.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
+    const outputToggle = target.closest<HTMLButtonElement>('[data-ai-test-output-toggle]');
+    if (outputToggle) {
+      testOutputsExpanded = !testOutputsExpanded;
+      render();
+      return;
+    }
     const testCopy = target.closest<HTMLButtonElement>('[data-ai-test-copy]');
     if (testCopy) {
       const table = body.querySelector<HTMLElement>('.ai-test-table-inner');
@@ -842,7 +990,22 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
     }
     const testClear = target.closest<HTMLButtonElement>('[data-ai-test-clear]');
     if (testClear) {
+      testOutputsExpanded = false;
       sendAiTestClear(current);
+      return;
+    }
+    const testDetail = target.closest<HTMLButtonElement>('[data-ai-test-detail]');
+    if (testDetail) {
+      const index = Number(testDetail.dataset.aiTestDetail);
+      const result = aiData.get().testResults[index];
+      if (result) openTestDetail(result, index + 1);
+      return;
+    }
+    const apiView = target.closest<HTMLButtonElement>('[data-ai-api-view-exchange]');
+    if (apiView) {
+      const exchangeId = Number(apiView.dataset.aiApiViewExchange);
+      const exchange = aiData.get().exchanges.find((x) => x.id === exchangeId);
+      if (exchange) openApiViewer(`Recorded request ${exchange.id}`, exchange.input.rawRequest, exchange.output.rawResponse);
       return;
     }
     const testRun = target.closest<HTMLButtonElement>('[data-ai-test-run]');
@@ -861,7 +1024,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
         testSubmitLabel = undefined;
         testSubmitTimer = undefined;
         if (isOpen && tab === 'test') render();
-      }, 1000);
+      }, 500);
       render();
       sendAiTest(current, exchange, stage);
       return;
@@ -954,6 +1117,12 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   // Enter in a memory field commits it (Save for an existing line, Add for the
   // new-line field), so editing feels like a normal text input.
   body.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && tab === 'test' &&
+      (e.target as HTMLElement).closest('.ai-test-suite')) {
+      e.preventDefault();
+      body.querySelector<HTMLButtonElement>('[data-ai-test-run]')?.click();
+      return;
+    }
     if (e.key !== 'Enter') return;
     const t = e.target as HTMLElement;
     if (t.id === 'ai-mem-add-input') {

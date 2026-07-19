@@ -3,6 +3,7 @@
 // types — the host produces them, browsers only display them. Prompt assembly
 // itself lives host-side in apps/server/src/ai.
 import type { Action, ViewCommand } from './actions.js';
+import type { World } from './types.js';
 
 /** The one built-in agent id. Lives here (not server-only) so the web client
  *  can request/auto-refresh its history without duplicating the string. */
@@ -84,19 +85,30 @@ export interface AiPending {
 export interface AiPromptPart {
   label: string;
   content: string;
+  /** Optional nested prompt sections (used for the individual role-history turns). */
+  children?: AiPromptPart[];
   /** How often this section's content changes call-to-call, which decides
    *  whether Ollama's prefix KV-cache can reuse it. Sections are emitted
    *  least-changing-first (see assemble), so the cache holds through the leading
    *  run of unchanged sections and re-evaluates from the first change onward:
    *   - 'stable'     — byte-identical every call (role, action schema, registry,
    *                    voice): the reliably-cached prefix.
+   *   - 'rollingPrefix' — compact role history: turns through N−2 stay cached;
+   *                    the prior turn is reformatted at the moving tail.
    *   - 'occasional' — changes only on a discrete event (memory edit, roster
    *                    change): usually cached.
    *   - 'live'       — changes most turns (world snapshot, views, conversation,
    *                    the command itself): re-evaluated.
    *  Drives the per-section KV badge + the expected-cache target in the Config
    *  tab's View Pretty. Optional so older payloads/tests still render. */
-  volatility?: 'stable' | 'occasional' | 'live';
+  volatility?: 'stable' | 'rollingPrefix' | 'occasional' | 'live';
+}
+
+/** One role-tagged message in the actual Ollama chat request. Stored with an
+ * exchange so Test Suite replays can reproduce the original message layout. */
+export interface AiPromptMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
 }
 
 /** Per-call model telemetry, lifted from the daemon's response. All optional:
@@ -162,6 +174,11 @@ export interface AiTestResult {
   settings: AiTestSettings;
   text: string;
   ms: number;
+  /** Parse-only validation against the original request's world snapshot. */
+  validation?: { actions: number; views: number; rejected: string[] };
+  /** Exact JSON bodies exchanged with Ollama for this replay, when available. */
+  rawRequest?: string;
+  rawResponse?: string;
   stats?: AiStats;
   error?: string;
 }
@@ -234,12 +251,21 @@ export interface AiExchange {
     onBehalfOf?: string;
     /** The exact prompt string sent to the model (View Raw). */
     raw: string;
+    /** Exact Ollama request body, retained for API inspection when available. */
+    rawRequest?: string;
     /** The same prompt, broken into labeled sections (View Pretty). */
     parts: AiPromptPart[];
+    /** The exact role-tagged messages sent to Ollama. */
+    messages?: AiPromptMessage[];
+    /** Immutable fog-of-war state for Test Suite validation. Stripped from the
+     * browser-facing history response; retained by the host and persistence. */
+    validationWorld?: World;
   };
   output: {
     /** Verbatim model response text. */
     raw: string;
+    /** Exact Ollama response body, retained for API inspection when available. */
+    rawResponse?: string;
     /** Actions parsed + accepted from the response. */
     actions: Action[];
     /** Optional natural-language reply to the players (the model may omit it

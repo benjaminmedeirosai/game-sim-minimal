@@ -14,11 +14,15 @@ export interface UiState {
   sidebar: boolean;
   /** AI History modal open. */
   ai: boolean;
+  /** Last selected AI History tab, restored with the modal after reload. */
+  aiTab: 'history' | 'memory' | 'config' | 'test';
+  /** Preferred Test Details JSON formatting. */
+  aiTestDetailPretty: boolean;
   /** Selected unit id, restored once the world (hence the unit) exists. */
   unitId: string | null;
 }
 
-const DEFAULTS: UiState = { panel: null, sidebar: false, ai: false, unitId: null };
+const DEFAULTS: UiState = { panel: null, sidebar: false, ai: false, aiTab: 'history', aiTestDetailPretty: false, unitId: null };
 const KEY = 'gsm-ui';
 
 function load(): UiState {
