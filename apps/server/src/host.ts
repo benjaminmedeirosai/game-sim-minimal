@@ -29,6 +29,8 @@ import type {
   Coord,
   AiExchange,
   AiPending,
+  AiTestResult,
+  AiTestSettings,
   HostResources,
   HostMsg,
   MemoryOp,
@@ -45,6 +47,7 @@ import {
   orchestratorConfig,
   runOrchestrator,
 } from './ai/orchestrator/index.js';
+import { replayMessages } from './ai/orchestrator/prompt.js';
 import type { RunResult } from './ai/orchestrator/index.js';
 import { applyMemoryOps, memoryChanged } from './ai/orchestrator/memory.js';
 import { DEFAULT_VOICE, isVoiceId } from './ai/orchestrator/voice.js';
@@ -115,6 +118,7 @@ const SNAPSHOT_INTERVAL_MS = 100;
 const ACTION_LOG_MAX = 120;
 // Per-agent AI exchange history cap (the window can show a lot, but not forever).
 const AI_HISTORY_MAX = 50;
+const AI_TEST_RESULTS_MAX = 100;
 // How many memory revisions we keep for the audit log. The `rev` counter is
 // monotonic and independent of this, so trimming the tail never renumbers the
 // entries that remain.
@@ -164,6 +168,12 @@ export class Host {
   // for persistence and is fed back to ollama.init() on resume (applied only if
   // the daemon has it). Undefined = use the client's default.
   private aiModel?: string;
+  // Single host-wide sequence for real AI requests. It deliberately survives a
+  // history clear (and a new world) so a short request number never repeats.
+  private aiRequestSeq = 0;
+  // Shared Test Suite history. Unlike an individual browser's UI state, this is
+  // colony/server-owned so every player sees the same comparison runs.
+  private aiTestResults: AiTestResult[] = [];
   // Set whenever persisted state changes; the autosave loop only writes when
   // it's true, so a paused/idle world isn't rewritten every interval.
   private dirty = false;
@@ -195,6 +205,9 @@ export class Host {
       // Pre-voice saves have no aiVoice; fall back to the default persona.
       this.aiVoice = save.aiVoice && isVoiceId(save.aiVoice) ? save.aiVoice : DEFAULT_VOICE;
       this.aiModel = save.aiModel;
+      this.aiTestResults = save.aiTestResults ?? [];
+      this.aiRequestSeq = save.aiRequestSeq ?? 0;
+      this.migrateAiRequestIds();
       this.actionLog = save.actionLog;
       // Heal legacy saves made before the one-resource-per-tile rule: split any
       // mixed ground tiles so nothing sits stacked with a different resource.
@@ -411,6 +424,31 @@ export class Host {
     return undefined;
   }
 
+  /** Upgrade pre-counter UUID request IDs from older saves. The old IDs are
+   * mapped consistently into this host's integer sequence, including saved Test
+   * Suite rows that reference them. */
+  private migrateAiRequestIds(): void {
+    const remap = new Map<string, number>();
+    let next = this.aiRequestSeq;
+    for (const exchanges of this.aiHistory.values()) {
+      for (const exchange of exchanges) {
+        const raw = (exchange as unknown as { id: unknown }).id;
+        const id = typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0 ? raw : ++next;
+        next = Math.max(next, id);
+        remap.set(String(raw), id);
+        exchange.id = id;
+      }
+    }
+    for (const result of this.aiTestResults) {
+      const raw = (result as unknown as { exchangeId: unknown }).exchangeId;
+      const known = remap.get(String(raw));
+      const id = known ?? (typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0 ? raw : ++next);
+      next = Math.max(next, id);
+      result.exchangeId = id;
+    }
+    this.aiRequestSeq = next;
+  }
+
   /** Write the full session to disk durably. Used by the autosave loop and by
    *  the process shutdown hook (so a graceful exit — including tsx's restart on
    *  file change — never loses progress). Never throws: a failed write logs and
@@ -424,6 +462,8 @@ export class Host {
         aiMemoryLog: this.aiMemoryLog,
         aiVoice: this.aiVoice,
         aiModel: this.aiModel,
+        aiTestResults: this.aiTestResults,
+        aiRequestSeq: this.aiRequestSeq,
         actionLog: this.actionLog,
       });
       this.dirty = false;
@@ -488,9 +528,11 @@ export class Host {
    *  queued command reflects the world as it is when it actually runs. */
   async runCommand(text: string, source: ActionSource, roster: string[] = []): Promise<void> {
     const onBehalfOf = source.kind === 'player' ? source.name : undefined;
+    const requestId = ++this.aiRequestSeq;
+    this.dirty = true; // retain the sequence even if history is cleared later.
 
     const pending: AiPending = {
-      id: randomUUID(),
+      id: requestId,
       agent: ORCHESTRATOR_AGENT,
       command: text,
       submitter: onBehalfOf,
@@ -544,7 +586,7 @@ export class Host {
     if (idx >= 0) queue.splice(idx, 1);
 
     const exchange: AiExchange = {
-      id: randomUUID(),
+      id: pending.id,
       agent: ORCHESTRATOR_AGENT,
       tick: this.world.tick,
       input: result.input,
@@ -658,6 +700,88 @@ export class Host {
     this.broadcast({ m: 'aiEvent', agent });
   }
 
+  /** Replay a saved prompt with temporary settings. Deliberately does not parse
+   * the response, mutate history/memory, persist, or dispatch any actions. */
+  async runAiTest(agent: string, exchangeId: number, settings: AiTestSettings): Promise<AiTestResult> {
+    const submittedAt = Date.now();
+    const exchange = (this.aiHistory.get(agent) ?? []).find((x) => x.id === exchangeId);
+    const fail = (error: string): AiTestResult => ({ exchangeId, submittedAt, settings, text: '', ms: 0, error, status: 'complete' });
+    if (agent !== ORCHESTRATOR_AGENT || !exchange) return this.recordAiTest(agent, fail('Recorded test data was not found.'));
+    if (settings.model !== ollama.model && !ollama.availableModels.includes(settings.model)) return this.recordAiTest(agent, fail('Selected model is not installed.'));
+    if (!/^(0|[1-9][0-9]*[smh])$/.test(settings.keepAlive)) return this.recordAiTest(agent, fail('Invalid keep-alive duration.'));
+    const limits: Record<string, [number, number]> = {
+      temperature: [0, 2], top_k: [1, 200], top_p: [0, 1], min_p: [0, 1],
+      repeat_penalty: [0, 2], repeat_last_n: [-1, 32768], seed: [0, 2147483647],
+      num_predict: [-1, 4096], num_ctx: [512, 32768],
+    };
+    const options = Object.fromEntries(
+      Object.entries(settings.options).filter(([key, value]) => {
+        const limit = limits[key];
+        return limit !== undefined && Number.isFinite(value) && value >= limit[0] && value <= limit[1];
+      }),
+    );
+    const result: AiTestResult = {
+      exchangeId, submittedAt, settings: { ...settings, options }, text: '', ms: 0, status: 'queued',
+    };
+    this.recordAiTest(agent, result);
+    try {
+      const { text, ms, stats } = await ollama.chat(replayMessages(exchange.input.parts), {
+        model: settings.model,
+        keepAlive: settings.keepAlive,
+        think: settings.think,
+        options,
+        onStart: () => {
+          result.status = 'running';
+          this.updateAiTest(agent, result);
+        },
+      });
+      Object.assign(result, { text, ms, stats, status: 'complete' as const });
+      return this.updateAiTest(agent, result);
+    } catch (err) {
+      Object.assign(result, { error: (err as Error).message, status: 'complete' as const });
+      return this.updateAiTest(agent, result);
+    }
+  }
+
+  /** Append the selected history exchange as a fixed comparison baseline. */
+  addAiTestOriginal(agent: string, exchangeId: number): void {
+    const exchange = (this.aiHistory.get(agent) ?? []).find((x) => x.id === exchangeId);
+    if (agent !== ORCHESTRATOR_AGENT || !exchange) return;
+    this.recordAiTest(agent, {
+      exchangeId,
+      original: true,
+      status: 'complete',
+      submittedAt: Date.now(),
+      settings: { model: exchange.output.stats?.model ?? ollama.model, keepAlive: '—', think: false, options: {} },
+      text: exchange.output.raw,
+      ms: exchange.ms,
+      stats: exchange.output.stats,
+    });
+  }
+
+  private recordAiTest(agent: string, result: AiTestResult): AiTestResult {
+    this.aiTestResults.push(result);
+    if (this.aiTestResults.length > AI_TEST_RESULTS_MAX) {
+      this.aiTestResults.splice(0, this.aiTestResults.length - AI_TEST_RESULTS_MAX);
+    }
+    return this.updateAiTest(agent, result);
+  }
+
+  private updateAiTest(agent: string, result: AiTestResult): AiTestResult {
+    this.dirty = true;
+    this.save(); // Test Suite runs are deliberate audit data; persist at once.
+    this.broadcast({ m: 'aiEvent', agent });
+    return result;
+  }
+
+  clearAiTests(agent: string): void {
+    if (agent !== ORCHESTRATOR_AGENT || this.aiTestResults.length === 0) return;
+    this.aiTestResults = [];
+    this.dirty = true;
+    this.save();
+    this.broadcast({ m: 'aiEvent', agent });
+  }
+
   /** Build the aiHistory reply for a requested agent (history + prompt config
    *  + the roster of known agents for the window's selector). */
   aiHistoryMsg(agent: string, roster: string[] = []): HostMsg {
@@ -678,6 +802,7 @@ export class Host {
       pending: this.aiPending.get(agent) ?? [],
       memory: this.aiMemory,
       memoryLog: this.aiMemoryLog,
+      testResults: this.aiTestResults,
     };
   }
 
@@ -723,6 +848,7 @@ export class Host {
     this.aiHistory.clear();
     this.aiMemory = [];
     this.aiMemoryLog = [];
+    this.aiTestResults = [];
     this.memoryRev = 0;
     this.actionLog = [];
     this.unitAction.clear();

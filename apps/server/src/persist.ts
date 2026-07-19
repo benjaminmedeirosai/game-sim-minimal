@@ -20,7 +20,7 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ActionRecord, AiExchange, CameraState, MemoryRevision, World } from '@game/shared';
+import type { ActionRecord, AiExchange, AiTestResult, CameraState, MemoryRevision, World } from '@game/shared';
 
 // Bump when the SaveGame shape changes incompatibly; a mismatched save is
 // ignored (we start fresh) rather than crashing the host on boot.
@@ -46,6 +46,10 @@ export interface SaveGame {
   /** The model tag the orchestrator runs on. Optional so older saves load (and
    *  it's machine-specific) — applied on resume only if the daemon has it. */
   aiModel?: string;
+  /** Shared, persisted Test Suite replay history. */
+  aiTestResults?: AiTestResult[];
+  /** Last host-issued AI request number. Never reset by clearing history. */
+  aiRequestSeq?: number;
   /** Recent attributed actions for the Actions panel. */
   actionLog: ActionRecord[];
 }

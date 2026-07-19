@@ -11,6 +11,8 @@ import type {
   AiExchange,
   AiPending,
   AiRuntimeStatus,
+  AiTestResult,
+  AiTestSettings,
   ClientMsg,
   HostMsg,
   MemoryOp,
@@ -57,6 +59,7 @@ export interface AiState {
   // The colony's current standing memory and its change log, for the Memory tab.
   memory: string[];
   memoryLog: MemoryRevision[];
+  testResults: AiTestResult[];
 }
 export const aiData = new Store<AiState>({
   agents: [],
@@ -64,6 +67,7 @@ export const aiData = new Store<AiState>({
   pending: [],
   memory: [],
   memoryLog: [],
+  testResults: [],
 });
 
 // Bumped whenever the host reports a new exchange, so an open window refetches.
@@ -73,6 +77,7 @@ export const aiEvents = new Store<{ agent: string; n: number }>({ agent: '', n: 
 // memory/CPU). Polled by the Config tab; `status` is undefined until the first
 // reply (Store requires an object, so it's wrapped).
 export const aiStatus = new Store<{ status?: AiRuntimeStatus }>({});
+export const aiTest = new Store<{ result?: AiTestResult }>({});
 
 let conn: DataConnection | undefined;
 let peer: Peer | undefined;
@@ -288,10 +293,14 @@ function handleHostMsg(msg: HostMsg, wireBytes = 0): void {
         pending: msg.pending,
         memory: msg.memory,
         memoryLog: msg.memoryLog,
+        testResults: msg.testResults,
       });
       break;
     case 'aiStatus':
       aiStatus.set(() => ({ status: msg.status }));
+      break;
+    case 'aiTest':
+      aiTest.set(() => ({ result: msg.result }));
       break;
     case 'aiEvent':
       aiEvents.set((s) => ({ agent: msg.agent, n: s.n + 1 }));
@@ -399,6 +408,18 @@ export function sendAiVoice(agent: string, voice: string): void {
 
 export function sendAiModel(agent: string, model: string): void {
   send({ m: 'aiModel', agent, model });
+}
+
+export function sendAiTest(agent: string, exchangeId: number, settings: AiTestSettings): void {
+  send({ m: 'aiTest', agent, exchangeId, settings });
+}
+
+export function sendAiTestOriginal(agent: string, exchangeId: number): void {
+  send({ m: 'aiTestOriginal', agent, exchangeId });
+}
+
+export function sendAiTestClear(agent: string): void {
+  send({ m: 'aiTestClear', agent });
 }
 
 export function sendAiMemoryEdit(agent: string, ops: MemoryOp[]): void {

@@ -11,6 +11,8 @@ import type {
   AiExchange,
   AiPending,
   AiRuntimeStatus,
+  AiTestResult,
+  AiTestSettings,
   MemoryOp,
   MemoryRevision,
 } from './ai.js';
@@ -70,6 +72,11 @@ export type ClientMsg =
   // Switch the model an agent runs on (a tag from AiConfigView.models). Colony-
   // wide + persisted; the host warms the new model so the next command is fast.
   | { m: 'aiModel'; agent: string; model: string }
+  // Replay a recorded prompt with temporary settings. This never parses,
+  // records, persists, or dispatches the model response.
+  | { m: 'aiTest'; agent: string; exchangeId: number; settings: AiTestSettings }
+  | { m: 'aiTestOriginal'; agent: string; exchangeId: number }
+  | { m: 'aiTestClear'; agent: string }
   // Manually edit the colony's standing memory from the Memory tab, as the same
   // add/edit/del ops the model uses (ids are the 1-based positions shown there).
   | { m: 'aiMemoryEdit'; agent: string; ops: MemoryOp[] }
@@ -112,6 +119,7 @@ export type HostMsg =
       // its append-only change log, so the tab can show + audit both.
       memory: string[];
       memoryLog: MemoryRevision[];
+      testResults: AiTestResult[];
     }
   // A lightweight nudge that a new exchange was recorded, so an open history
   // window can refetch. Kept payload-free to stay cheap on the broadcast path.
@@ -119,6 +127,7 @@ export type HostMsg =
   // Reply to aiStatusReq: the backend's live runtime status (daemon reachability,
   // resident models, active-model load state, host memory/CPU).
   | { m: 'aiStatus'; agent: string; status: AiRuntimeStatus }
+  | { m: 'aiTest'; agent: string; result: AiTestResult }
   // Drive ONE player's on-screen camera (in response to their own command, e.g.
   // "show me unit-2"). Any subset of fields: pan to (cx,cy) and/or set the zoom
   // via tilesAcross. Client-side view state only — never touches the world.

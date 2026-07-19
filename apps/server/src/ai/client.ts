@@ -36,14 +36,20 @@ export interface ChatOptions {
    *  models (gemma among them) otherwise reason on every call, which costs
    *  ~28× the latency for no benefit on our short action-planning prompts. If
    *  ever turned on, capture `message.thinking` from the response to show it. */
-  think?: boolean;
+  think?: boolean | 'low' | 'medium' | 'high';
+  /** Per-call overrides used only by the Test Suite. */
+  model?: string;
+  keepAlive?: string;
+  options?: Record<string, number>;
+  /** Invoked when this call reaches the front of Ollama's serial queue. */
+  onStart?: () => void;
 }
 
 /** The verbatim `options` object we send the daemon for a given call — the
  *  single source of truth for both the request and the Config-tab display.
  *  (`think` is a top-level /api/chat field, not an option, so it's separate.) */
 function requestOptions(opts: ChatOptions): Record<string, unknown> {
-  return { temperature: opts.temperature ?? 0, num_ctx: NUM_CTX };
+  return { temperature: opts.temperature ?? 0, num_ctx: NUM_CTX, ...opts.options };
 }
 
 /** The tuning knobs currently in effect, for the Config tab. Mirrors exactly
@@ -52,7 +58,7 @@ export function chatSettings(opts: ChatOptions = {}): AiSettings {
   return {
     model: ollama.model,
     keepAlive: KEEP_ALIVE,
-    think: opts.think ?? false,
+    think: opts.think === true,
     options: requestOptions(opts),
   };
 }
@@ -250,6 +256,7 @@ class OllamaClient {
       if (!this.available) {
         throw new Error(`Ollama is not running. Start it with \`ollama serve\` (model ${this.currentModel}).`);
       }
+      opts.onStart?.();
       return this.rawChat(messages, opts);
     });
     // Keep the chain alive even if this call rejects, so one failure doesn't
@@ -293,10 +300,10 @@ class OllamaClient {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: this.currentModel,
+        model: opts.model ?? this.currentModel,
         messages,
         stream: false,
-        keep_alive: KEEP_ALIVE,
+        keep_alive: opts.keepAlive ?? KEEP_ALIVE,
         think: opts.think ?? false,
         options: requestOptions(opts),
       }),
@@ -307,6 +314,8 @@ class OllamaClient {
     const data = (await res.json()) as OllamaChatResponse;
     const evalCount = data.eval_count;
     const evalDur = data.eval_duration; // ns
+    const promptCount = data.prompt_eval_count;
+    const promptDur = data.prompt_eval_duration;
     return {
       text: data.message?.content ?? '',
       ms: Date.now() - started,
@@ -319,7 +328,9 @@ class OllamaClient {
         promptMs: nsToMs(data.prompt_eval_duration),
         evalMs: nsToMs(data.eval_duration),
         tokensPerSec:
-          evalCount && evalDur ? Math.round((evalCount / evalDur) * 1e9) : undefined,
+          evalCount && evalDur ? Math.round((evalCount / evalDur) * 1e10) / 10 : undefined,
+        promptTokensPerSec:
+          promptCount && promptDur ? Math.round((promptCount / promptDur) * 1e10) / 10 : undefined,
         doneReason: data.done_reason,
       },
     };

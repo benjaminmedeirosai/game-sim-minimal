@@ -628,5 +628,24 @@ export function assemble(
   return { messages, raw, parts };
 }
 
+/** Rebuild the original chat-message roles from an exchange's recorded prompt
+ * parts. Used by Test Suite so a replay is byte-for-byte equivalent to the
+ * saved system/user prompt, rather than flattening it into one user message. */
+export function replayMessages(parts: AiPromptPart[]): ChatMessage[] {
+  const byLabel = new Map(parts.map((p) => [p.label, p.content]));
+  const need = (label: string): string => byLabel.get(label) ?? '';
+  const sys = ['System', 'Actions', 'World reference', 'Recipes']
+    .map(need)
+    .join('\n\n');
+  const voice = byLabel.get('Voice');
+  const sysContent = voice ? `${sys}\n\n${voice}` : sys;
+  const userContent = [
+    'Memory (standing player preferences):', need('Memory'), '', need('Players'), '',
+    need('World context'), '', 'Player views (what each player currently sees on screen):',
+    need('Player views'), '', 'Recent conversation:', need('Recent conversation'), '', need('Command'),
+  ].join('\n');
+  return [{ role: 'system', content: sysContent }, { role: 'user', content: userContent }];
+}
+
 // Re-export so the parser and callers phrase actions consistently.
 export { describeAction };

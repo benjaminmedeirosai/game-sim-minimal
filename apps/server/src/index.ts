@@ -284,6 +284,14 @@ function wirePeer(p: InstanceType<typeof Peer>): InstanceType<typeof Peer> {
         host.setAiVoice(msg.agent, msg.voice);
       } else if (msg.m === 'aiModel') {
         host.setAiModel(msg.agent, msg.model);
+      } else if (msg.m === 'aiTest') {
+        void host.runAiTest(msg.agent, msg.exchangeId, msg.settings).then((result) => {
+          safeSend(conn, { m: 'aiTest', agent: msg.agent, result });
+        });
+      } else if (msg.m === 'aiTestOriginal') {
+        host.addAiTestOriginal(msg.agent, msg.exchangeId);
+      } else if (msg.m === 'aiTestClear') {
+        host.clearAiTests(msg.agent);
       } else if (msg.m === 'aiMemoryEdit') {
         const by = roster.list().find((p2) => p2.id === conn.peer)?.name ?? conn.peer;
         host.editMemory(msg.agent, msg.ops, by);

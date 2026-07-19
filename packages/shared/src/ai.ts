@@ -67,7 +67,8 @@ export interface PlayerCameraView {
  *  live in the chat so submitters see their command land immediately and can
  *  watch the queue drain. Becomes an `AiExchange` once the model responds. */
 export interface AiPending {
-  id: string;
+  /** Host-wide monotonic AI request number. */
+  id: number;
   agent: string;
   /** The natural-language command as submitted. */
   command: string;
@@ -118,6 +119,8 @@ export interface AiStats {
   evalMs?: number;
   /** Output tokens per second during generation (eval_count / eval_duration). */
   tokensPerSec?: number;
+  /** Prompt tokens per second (prompt_eval_count / prompt_eval_duration). */
+  promptTokensPerSec?: number;
   /** Why generation stopped (`done_reason`: "stop", "length", …). */
   doneReason?: string;
 }
@@ -136,6 +139,31 @@ export interface AiSettings {
   think: boolean;
   /** The verbatim `options` payload sent per request. */
   options: Record<string, unknown>;
+}
+
+/** Ephemeral settings for a Test Suite run. They are sent for that one model
+ * call only; unlike the active model picker, they are never persisted. */
+export interface AiTestSettings {
+  model: string;
+  keepAlive: string;
+  think: boolean | 'low' | 'medium' | 'high';
+  options: Record<string, number>;
+}
+
+/** One non-acting replay result from the AI Test Suite. */
+export interface AiTestResult {
+  exchangeId: number;
+  /** A captured original history record, rather than a newly-run replay. */
+  original?: boolean;
+  /** Live state for queued Test Suite replays. */
+  status?: 'queued' | 'running' | 'complete';
+  /** Host time when the replay was submitted, before it entered the model queue. */
+  submittedAt: number;
+  settings: AiTestSettings;
+  text: string;
+  ms: number;
+  stats?: AiStats;
+  error?: string;
 }
 
 /** One model the daemon currently has RESIDENT in memory — a row of
@@ -194,7 +222,8 @@ export interface AiRuntimeStatus {
 /** A single request/response round-trip with an AI agent, for the History tab.
  *  Captures exactly what went out and came back so a run is fully auditable. */
 export interface AiExchange {
-  id: string;
+  /** Host-wide monotonic AI request number. */
+  id: number;
   agent: string;
   /** World tick when the command was issued. */
   tick: number;
