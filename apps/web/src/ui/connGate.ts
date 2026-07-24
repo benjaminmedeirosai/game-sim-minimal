@@ -79,7 +79,7 @@ function shell(inner: string): string {
   return `
     <div class="gate-card">
       <div class="gate-logo" aria-hidden="true">
-        <img class="gate-logo-image" src="/favicon.svg" alt="" />
+        <img class="gate-logo-image" src="./favicon.svg" alt="" />
       </div>
       <h1 class="gate-title">game-sim-minimal</h1>
       <p class="gate-sub">A milestone-gated multiplayer colony sim.</p>

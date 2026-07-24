@@ -28,7 +28,7 @@ export function mountApp(root: HTMLElement): void {
     <div class="app">
       <header class="topbar">
         <button class="brand-toggle" data-layout type="button" title="Toggle the left sidebar (AI chat + actions)" aria-label="Toggle the left sidebar" aria-expanded="false">
-          <img class="brand-icon" src="/favicon.svg" alt="" />
+          <img class="brand-icon" src="./favicon.svg" alt="" />
         </button>
         <span class="brand">game-sim-minimal</span>
         <span class="spacer"></span>
