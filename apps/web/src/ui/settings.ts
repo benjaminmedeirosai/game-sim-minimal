@@ -87,7 +87,9 @@ export function mountSettings(el: HTMLElement): void {
   );
 
   const limitEl = el.querySelector<HTMLElement>('#zoom-limit')!;
-  viewportInfo.subscribe((vi) => {
+  const renderZoomLimit = (): void => {
+    if (el.hidden) return;
+    const vi = viewportInfo.get();
     const across = Math.round(vi.maxTilesAcross);
     const down = Math.round(vi.maxTilesDown);
     limitEl.innerHTML = `
@@ -95,5 +97,7 @@ export function mountSettings(el: HTMLElement): void {
       <div class="hud-k">aspect</div><div class="hud-v">${vi.aspect.toFixed(2)}</div>
       <div class="hud-k">max zoom</div><div class="hud-v">${across} × ${down} tiles</div>
       <div class="hud-k">drawn at max</div><div class="hud-v">${(across * down).toLocaleString()} tiles</div>`;
-  });
+  };
+  viewportInfo.subscribe(renderZoomLimit);
+  el.addEventListener('panelopen', renderZoomLimit);
 }

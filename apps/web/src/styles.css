@@ -111,8 +111,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: transparent; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
 }
 .sb-clear:hover { color: var(--fg); border-color: var(--muted); background: #262a35; }
-/* Chat gets the larger share; actions the smaller. Both scroll internally. */
-.sb-chat { flex: 2 1 0; }
+/* Chat and actions split the available sidebar height evenly. Both scroll internally. */
+.sb-chat { flex: 1 1 0; }
 .sb-actions { flex: 1 1 0; padding-bottom: 12px; }
 /* The actions mount is itself a flex column so its list can bound + scroll. */
 .sb-actions > #sb-actions { display: flex; flex-direction: column; min-height: 0; flex: 1; }
@@ -326,6 +326,23 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   list-style: none; margin: 0; padding: 0; display: grid; gap: 5px;
   overflow-y: auto;
 }
+.action-form {
+  position: relative; display: flex; gap: 6px; flex-wrap: wrap;
+  padding-top: 8px; border-top: 1px solid var(--border);
+}
+.action-input {
+  flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border);
+  color: var(--fg); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12px;
+}
+.action-send { padding: 5px 9px; font-size: 12px; }
+.action-help { display: flex; width: 100%; min-height: 16px; gap: 4px; align-items: center; flex-wrap: wrap; }
+.action-hint, .action-error { color: var(--muted); font-size: 10px; margin-right: 2px; }
+.action-error { color: #f87171; }
+.action-help button {
+  border: 1px solid var(--border); background: #1b2233; color: #bcd0f5; border-radius: 4px;
+  font: inherit; font-size: 10px; padding: 1px 5px; cursor: pointer;
+}
+.action-help button:hover { border-color: var(--accent); color: var(--fg); }
 .act-row {
   border-left: 3px solid var(--border);
   background: #0f1117; border-radius: 0 8px 8px 0; padding: 6px 9px;
@@ -736,7 +753,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .ai-mem-op-edit { border-left-color: var(--accent); }
 .ai-mem-op-del { border-left-color: #f87171; }
 
-/* ---- floating panels ---- */
+/* ---- floating panels + docked right panels ---- */
 .panel-float {
   position: absolute; top: 56px; right: 14px; width: 300px;
   background: var(--panel); border: 1px solid var(--border);
@@ -744,7 +761,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   box-shadow: 0 12px 32px #0008;
   max-height: calc(100vh - 70px); overflow-y: auto;
 }
-.panel-hud { width: 260px; }
+.panel-side {
+  flex: 0 0 340px; min-width: 0; overflow-y: auto;
+  padding: 16px 18px; background: var(--panel); border-left: 1px solid var(--border);
+}
+.panel-side.panel-hud { flex-basis: 260px; }
+.panel-side.panel-controls { flex-basis: 400px; }
 h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
 h2.mt { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
 
@@ -819,11 +841,18 @@ kbd {
 /* ---- Controls → Actions catalogue ---- */
 /* One action per row: full-width cards, top-aligned so the sentence wraps. */
 .act-list { grid-template-columns: 1fr; }
-.act-card { align-items: flex-start; }
+.act-card { position: relative; align-items: flex-start; padding-right: 42px; }
+.act-copy { position: absolute; top: 6px; right: 7px; width: 26px; height: 26px; font-size: 15px; }
 .act-type {
   font-size: 11px; font-weight: 600; color: var(--accent);
   background: var(--panel-2, rgba(255, 255, 255, 0.06));
   border: 1px solid var(--border); border-radius: 5px; padding: 0 5px; margin-left: 4px;
+}
+.act-args { color: var(--muted); font: 400 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.act-example {
+  font: 400 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent);
+  background: var(--panel-2, rgba(255, 255, 255, 0.06)); border: 1px solid var(--border);
+  border-radius: 5px; padding: 1px 5px; white-space: nowrap;
 }
 .act-desc { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
 .spark { width: 100%; height: 40px; margin-top: 12px; display: block; }

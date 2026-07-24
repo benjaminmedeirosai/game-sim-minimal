@@ -197,22 +197,23 @@ function assetsTab(): string {
 
 interface ActionDoc {
   name: string;
-  type: string; // the JSON "type" the sim/AI use
-  args: string; // fields beyond the action type
-  who: string; // how it's reached
+  type: string; // the strict command keyword the AI emits
+  args: string;
+  syntax: string;
+  examples: string[];
   desc: string;
 }
 
-/** One action card: a name + type badge, a sentence, and arg/access chips. */
+/** One action card: syntax in the header and strict AI command examples below. */
 function actCard(a: ActionDoc): string {
+  const copyText = `${a.syntax} — ${a.desc}\nExamples:\n${a.examples.join('\n')}`;
   return (
     `<div class="cat-card act-card"><div class="cat-info">` +
-    `<div class="cat-name">${a.name} <code class="act-type">${a.type}</code></div>` +
+    `<div class="cat-name">${a.name} <code class="act-type">${a.type}</code> <span class="act-args">${a.args}</span></div>` +
     `<div class="act-desc">${a.desc}</div>` +
     `<div class="cat-stats">` +
-    `<span class="cat-stat"><span class="cs-k">Args</span> ${a.args}</span>` +
-    `<span class="cat-stat"><span class="cs-k">Who</span> ${a.who}</span>` +
-    `</div></div></div>`
+    a.examples.map((example) => `<code class="act-example">${example}</code>`).join('') +
+    `</div></div><button class="icon-btn act-copy" type="button" data-copy-action="${encodeURIComponent(copyText)}" title="Copy AI reference for ${a.name}" aria-label="Copy AI reference for ${a.name}">⧉</button></div>`
   );
 }
 
@@ -224,57 +225,65 @@ const UNIT_ACTIONS: ActionDoc[] = [
   {
     name: 'Move',
     type: 'move',
-    args: 'unitId, to',
-    who: 'Player + AI',
+    args: '&lt;id&gt; &lt;cell&gt;',
+    syntax: 'move <id> <cell>',
+    examples: ['move unit0 AF29'],
     desc: 'Walk a unit to a tile. Only for repositioning or scouting — targeted actions already walk themselves, so you rarely need a bare move first.',
   },
   {
     name: 'Harvest',
     type: 'harvest',
-    args: 'unitId, target',
-    who: 'Player + AI',
+    args: '&lt;id&gt; &lt;cell|area&gt; [types]',
+    syntax: 'harvest <id> <cell|area> [types]',
+    examples: ['harvest unit0 AB16', 'harvest unit0 AU20:AZ28 tree ore'],
     desc: 'Work the object on the target tile — chop a tree for wood, gather a fruit tree for food, or mine rock/ore. The verb is inferred from what is there; the unit walks over first. Only one unit can work a given tile at a time. The AI may aim at an AREA (a cell range like AU20:AZ28, optionally filtered by resource type) and the closest matching resource to the unit is chosen.',
   },
   {
     name: 'Craft',
     type: 'craft',
-    args: 'unitId, recipe',
-    who: 'Player + AI',
+    args: '&lt;id&gt; &lt;recipe&gt;',
+    syntax: 'craft <id> <recipe>',
+    examples: ['craft unit0 pickaxe'],
     desc: 'Turn carried resources into a tool (axe, pickaxe) over the recipe’s work ticks. The unit stands still while crafting; inputs are reserved up front and refunded if cancelled.',
   },
   {
     name: 'Build',
     type: 'build',
-    args: 'unitId, building, at',
-    who: 'Player + AI',
+    args: '&lt;id&gt; &lt;building&gt; &lt;cell&gt;',
+    syntax: 'build <id> <building> <cell>',
+    examples: ['build unit0 storage J25'],
     desc: 'Walk to a tile and raise a building (campfire, workbench, storage, house). A construction marker drops as soon as work starts; the carried inputs are spent on completion.',
   },
   {
     name: 'Drop',
     type: 'drop',
-    args: 'unitId, at, item?, qty?',
-    who: 'Player (at a depot) + AI',
+    args: '&lt;id&gt; &lt;cell&gt; [item] [qty]',
+    syntax: 'drop <id> <cell> [item] [qty]',
+    examples: ['drop unit0 J25', 'drop unit0 J25 wood 10'],
     desc: 'Walk to a tile and set carried resources down. Onto a storage depot this deposits; onto plain ground it leaves a loose pile. Omit item to unload the whole bag.',
   },
   {
     name: 'Drop nearby',
-    type: 'dropNearby',
-    args: 'unitId, item?, qty?',
-    who: 'Player (unit menu) + AI',
+    type: 'dropnearby',
+    args: '&lt;id&gt; [item] [qty]',
+    syntax: 'dropnearby <id> [item] [qty]',
+    examples: ['dropnearby unit0', 'dropnearby unit0 wood 10'],
     desc: 'Drop resources on the ground right where the unit stands — no walking. Omit item to dump the whole bag. Overfilled bags shed their excess this way automatically.',
   },
   {
     name: 'Pick up',
     type: 'pickup',
-    args: 'unitId, at, item?, qty?',
-    who: 'Player (at a pile/depot) + AI',
+    args: '&lt;id&gt; &lt;cell|area&gt; [item] [qty]',
+    syntax: 'pickup <id> <cell|area> [item] [qty]',
+    examples: ['pickup unit0 AV26 wood', 'pickup unit0 AU20:AZ28 wood'],
     desc: 'Collect resources at a tile into the bag. From a storage depot this withdraws; from the ground it grabs a loose pile. Omit item to take all that fits under the carry limit. The AI may aim at an AREA (a cell range like AU20:AZ28) and the closest loose pile to the unit is chosen.',
   },
   {
     name: 'Cancel',
     type: 'cancel',
-    args: 'unitId',
-    who: 'Player (✕) + AI',
+    args: '&lt;id&gt;',
+    syntax: 'cancel <id>',
+    examples: ['cancel unit0'],
     desc: 'Stop a unit’s current non-interruptible job (harvest/craft/build) and leave it idle. Craft inputs are refunded. The only command a busy unit will accept.',
   },
 ];
@@ -282,9 +291,10 @@ const UNIT_ACTIONS: ActionDoc[] = [
 const CAMERA_ACTIONS: ActionDoc[] = [
   {
     name: 'Move camera',
-    type: 'setView',
-    args: 'center?, tilesAcross?',
-    who: 'AI (players pan/zoom directly)',
+    type: 'camera',
+    args: '&lt;cell&gt; &lt;tilesAcross&gt;',
+    syntax: 'camera <cell> <tilesAcross>',
+    examples: ['camera AF29', 'camera 40', 'camera AF29 40'],
     desc: 'Keyword `camera`. Pan and/or zoom the requesting player’s own view (e.g. “show me unit2”, “zoom out”) — it changes only what that player sees, never the world, and is not a way to move, patrol, or scout a unit.',
   },
 ];
@@ -294,8 +304,8 @@ function actionsTab(): string {
   return (
     actSection('Unit commands', UNIT_ACTIONS) +
     actSection('Camera', CAMERA_ACTIONS) +
-    `<p class="hint">The full command vocabulary. The AI emits these as JSON; you
-      trigger the same ones by clicking the map and the unit menu. Targeted
+    `<p class="hint">The full command vocabulary. The examples are the strict
+      line format the AI emits. Targeted
       actions (harvest, build, drop, pickup) walk the unit over on their own.</p>`
   );
 }
@@ -332,6 +342,15 @@ export function mountControls(el: HTMLElement): void {
   };
 
   tabs.addEventListener('click', (e) => {
+    const copy = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-copy-action]');
+    if (copy) {
+      const text = decodeURIComponent(copy.dataset.copyAction!);
+      void navigator.clipboard.writeText(text).then(() => {
+        copy.textContent = '✓';
+        setTimeout(() => { copy.textContent = '⧉'; }, 1200);
+      });
+      return;
+    }
     const btn = (e.target as HTMLElement).closest<HTMLElement>('.ai-tab');
     if (!btn) return;
     const t = btn.dataset.tab;

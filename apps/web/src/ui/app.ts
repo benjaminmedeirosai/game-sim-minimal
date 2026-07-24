@@ -48,12 +48,12 @@ export function mountApp(root: HTMLElement): void {
       <div class="stage">
         <aside class="sidebar" id="sidebar"></aside>
         <main id="world" class="world"></main>
+        <aside class="panel-side panel-hud" data-name="hud" hidden></aside>
+        <aside class="panel-side" data-name="settings" hidden></aside>
+        <aside class="panel-side panel-controls" data-name="controls" hidden></aside>
       </div>
       <aside class="panel-float" data-name="new" hidden></aside>
       <aside class="panel-float" data-name="room" hidden></aside>
-      <aside class="panel-float panel-hud" data-name="hud" hidden></aside>
-      <aside class="panel-float" data-name="settings" hidden></aside>
-      <aside class="panel-float" data-name="controls" hidden></aside>
       <div class="conn-gate" id="conn-gate"></div>
     </div>`;
 
@@ -64,14 +64,17 @@ export function mountApp(root: HTMLElement): void {
 
   const worldEl = root.querySelector<HTMLElement>('#world')!;
   const panels = new Map<string, HTMLElement>();
-  root.querySelectorAll<HTMLElement>('.panel-float').forEach((p) => {
+  root.querySelectorAll<HTMLElement>('[data-name]').forEach((p) => {
     panels.set(p.dataset.name!, p);
   });
 
   const togglePanel = (name: string): void => {
     for (const [n, p] of panels) {
+      const wasOpen = !p.hidden;
       p.hidden = n === name ? !p.hidden : true;
+      if (wasOpen && p.hidden) p.dispatchEvent(new Event('panelclose'));
     }
+    refreshViewportInfo(); // a docked right panel changes the map's width
     // Re-render the settings form each time it opens so it reflects the world.
     if (name === 'new' && !panels.get('new')!.hidden) {
       mountNewWorld(panels.get('new')!, () => togglePanel('new'));
@@ -81,8 +84,13 @@ export function mountApp(root: HTMLElement): void {
     const open = [...panels].find(([, p]) => !p.hidden);
     setUi({ panel: open ? open[0] : null }); // survive reload
     if (open) {
+      // Dynamic floating panels subscribe to live stores, but only paint while
+      // visible. Notify the newly-open panel to catch up with the latest state.
+      open[1].dispatchEvent(new Event('panelopen'));
       openLayer('panel', () => {
         open[1].hidden = true;
+        open[1].dispatchEvent(new Event('panelclose'));
+        refreshViewportInfo();
         closeLayer('panel');
         setActive('map');
       });

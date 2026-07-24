@@ -9,7 +9,9 @@ function roleTag(p: NetState['roster'][number]): string {
 
 /** Renders the room roster into a panel element. */
 export function mountRoom(el: HTMLElement): void {
-  net.subscribe((s) => {
+  const rerender = (): void => {
+    if (el.hidden) return;
+    const s = net.get();
     const status =
       s.status === 'connected'
         ? `Connected as ${s.me?.name ?? '?'}`
@@ -32,5 +34,7 @@ export function mountRoom(el: HTMLElement): void {
       <button class="btn btn-ghost room-return" data-return-to-login${s.status === 'connected' ? '' : ' disabled'}>Return to login</button>`;
 
     el.querySelector<HTMLButtonElement>('[data-return-to-login]')?.addEventListener('click', returnToLogin);
-  });
+  };
+  net.subscribe(rerender);
+  el.addEventListener('panelopen', rerender);
 }
