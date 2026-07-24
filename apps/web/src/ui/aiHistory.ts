@@ -128,6 +128,7 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
           <button class="ai-tab" data-tab="config">Config</button>
           <button class="ai-tab" data-tab="test">Test Suite</button>
         </div>
+        <button class="icon-btn" id="ai-fullscreen" title="Full screen" aria-label="Full screen">⛶</button>
         <button class="icon-btn" id="ai-close" title="Close">✕</button>
       </header>
       <div class="modal-body" id="ai-body"></div>
@@ -147,6 +148,8 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   const select = overlay.querySelector<HTMLSelectElement>('#ai-select')!;
   const body = overlay.querySelector<HTMLElement>('#ai-body')!;
   const tabs = overlay.querySelector<HTMLElement>('#ai-tabs')!;
+  const modal = overlay.querySelector<HTMLElement>('.modal-ai')!;
+  const fullscreen = overlay.querySelector<HTMLButtonElement>('#ai-fullscreen')!;
   const testDetailBody = testDetailOverlay.querySelector<HTMLElement>('.ai-test-detail-body')!;
   let testDetail: { label: string; rawRequest?: string; rawResponse?: string } | undefined;
   let testDetailPretty = uiState.get().aiTestDetailPretty;
@@ -956,6 +959,11 @@ export function mountAiHistory(root: HTMLElement): { toggle: () => void } {
   // --- events ------------------------------------------------------------
 
   overlay.querySelector<HTMLButtonElement>('#ai-close')!.addEventListener('click', close);
+  fullscreen.addEventListener('click', () => {
+    const expanded = modal.classList.toggle('modal-ai-fullscreen');
+    fullscreen.title = expanded ? 'Exit full screen' : 'Full screen';
+    fullscreen.setAttribute('aria-label', fullscreen.title);
+  });
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) close(); // click backdrop
   });

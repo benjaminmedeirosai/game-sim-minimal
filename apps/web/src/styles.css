@@ -406,7 +406,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 /* ---- AI History modal (≈80%×80%) ---- */
 .modal-overlay {
   position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
-  background: #0009; backdrop-filter: blur(2px);
+  background: #0009;
 }
 /* An explicit `display` beats the UA `[hidden] { display: none }`, so the
    overlay would show even when hidden. Restore hide-on-hidden explicitly. */
@@ -415,6 +415,10 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   width: 80vw; height: 80vh; display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 14px; box-shadow: 0 20px 60px #000a; overflow: hidden;
+}
+.modal-ai-fullscreen {
+  width: 100vw; height: 100vh;
+  border-radius: 0; border: 0;
 }
 .modal-head {
   display: flex; align-items: center; gap: 12px;
