@@ -27,6 +27,9 @@ export function mountApp(root: HTMLElement): void {
   root.innerHTML = `
     <div class="app">
       <header class="topbar">
+        <button class="brand-toggle" data-layout type="button" title="Toggle the left sidebar (AI chat + actions)" aria-label="Toggle the left sidebar" aria-expanded="false">
+          <img class="brand-icon" src="/favicon.svg" alt="" />
+        </button>
         <span class="brand">game-sim-minimal</span>
         <span class="spacer"></span>
         <div class="topbar-actions">
@@ -36,7 +39,6 @@ export function mountApp(root: HTMLElement): void {
           <button class="btn btn-ghost" data-panel="hud" title="Performance stats (server + this client)">Perf</button>
           <button class="btn btn-ghost" data-panel="settings" title="Settings (zoom, pan speed, sidebar width, …)">Settings</button>
           <button class="btn btn-ghost" data-panel="controls" title="Controls &amp; hotkeys reference">Controls</button>
-          <button class="btn btn-ghost" data-layout title="Toggle the left sidebar (AI chat + actions)">☰ Sidebar</button>
         </div>
         <div class="controls">
           <div id="speed" class="speed"></div>
@@ -51,9 +53,9 @@ export function mountApp(root: HTMLElement): void {
         <aside class="panel-side panel-hud" data-name="hud" hidden></aside>
         <aside class="panel-side" data-name="settings" hidden></aside>
         <aside class="panel-side panel-controls" data-name="controls" hidden></aside>
+        <aside class="panel-side" data-name="room" hidden></aside>
       </div>
       <aside class="panel-float" data-name="new" hidden></aside>
-      <aside class="panel-float" data-name="room" hidden></aside>
       <div class="conn-gate" id="conn-gate"></div>
     </div>`;
 
@@ -111,7 +113,15 @@ export function mountApp(root: HTMLElement): void {
   mountRoom(panels.get('room')!);
   mountHud(panels.get('hud')!);
   mountSettings(panels.get('settings')!);
-  mountControls(panels.get('controls')!);
+  const controls = mountControls(panels.get('controls')!);
+  window.addEventListener('game:show-action-doc', (event) => {
+    const type = (event as CustomEvent<string>).detail;
+    if (!type) return;
+    // This is a navigation request, not a toolbar toggle. Leave Controls open
+    // when the player clicks a second action in the feed.
+    if (panels.get('controls')!.hidden) togglePanel('controls');
+    requestAnimationFrame(() => controls.showAction(type));
+  });
   const sidebarEl = root.querySelector<HTMLElement>('#sidebar')!;
   mountSidebar(sidebarEl);
   mountZoomControls(root.querySelector<HTMLElement>('#zoomctl')!);
@@ -126,8 +136,12 @@ export function mountApp(root: HTMLElement): void {
   // Restore the sidebar layout before settings.subscribe (below) reads the class
   // to decide whether to recompute the zoom cap.
   if (savedUi.sidebar) app.classList.add('layout-sidebar');
-  root.querySelector<HTMLButtonElement>('[data-layout]')!.addEventListener('click', () => {
+  const layoutToggle = root.querySelector<HTMLButtonElement>('[data-layout]')!;
+  const syncLayoutToggle = (): void => layoutToggle.setAttribute('aria-expanded', String(app.classList.contains('layout-sidebar')));
+  syncLayoutToggle();
+  layoutToggle.addEventListener('click', () => {
     const on = app.classList.toggle('layout-sidebar');
+    syncLayoutToggle();
     setUi({ sidebar: on }); // survive reload
     refreshViewportInfo(); // world width changed; recompute zoom cap
   });
@@ -182,7 +196,6 @@ export function mountApp(root: HTMLElement): void {
     coordBadge.textContent = game.get().world ? `◎ ${toCellXY(c.cx, c.cy)}` : '';
   };
   camera.subscribe(syncCoord);
-  game.subscribe(syncCoord);
 
   // Live tile under the mouse cursor (blank when off the map).
   const mouseBadge = root.querySelector<HTMLElement>('#mouse-badge')!;

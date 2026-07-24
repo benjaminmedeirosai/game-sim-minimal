@@ -10,6 +10,9 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 import {
   BASE_TPS,
+  BUILDINGS,
+  HARVEST_RULES,
+  RECIPES,
   STATS_INTERVAL_MS,
   TickStats,
   applyAction,
@@ -136,7 +139,7 @@ export class Host {
   // the action that started it. A unit has at most one in-flight action; a new
   // command supersedes (interrupts) the old one. Rebuilt from scratch each
   // session — not persisted (a resume shows loaded actions as-is).
-  private unitAction = new Map<string, { recId: string; type: Action['type']; verb?: string }>();
+  private unitAction = new Map<string, { recId: string; type: Action['type']; verb?: string; moveTotal?: number }>();
   // Full request/response audit per AI agent, newest last.
   private aiHistory = new Map<string, AiExchange[]>();
   // Commands accepted but not yet answered, per agent (running + queued),
@@ -286,6 +289,7 @@ export class Host {
     }
     if (!unit) {
       rec.status = 'error';
+      rec.failureReason = 'Unit no longer exists.';
       return;
     }
     // A plain move onto the tile the unit already occupies does nothing to walk.
@@ -321,6 +325,7 @@ export class Host {
       // The busy-guard rejected it, or there was nothing to do (empty target,
       // unreachable). Nothing will run, so it's a no-op failure.
       rec.status = 'error';
+      rec.failureReason = this.initialFailureReason(a, unit);
       return;
     }
     // A new command supersedes whatever this unit was doing (only a plain move is
@@ -330,8 +335,55 @@ export class Host {
       const pr = this.recordById(prev.recId);
       if (pr && pr.status === 'ongoing') pr.status = 'interrupted';
     }
-    this.unitAction.set(a.unitId, { recId: rec.id, type: a.type, verb: unit.job?.verb });
+    const info = {
+      recId: rec.id,
+      type: a.type,
+      verb: unit.job?.verb,
+      ...(a.type === 'move'
+        ? { moveTotal: Math.max(1, Math.abs(unit.pos.x - a.to.x) + Math.abs(unit.pos.y - a.to.y)) }
+        : {}),
+    };
+    this.unitAction.set(a.unitId, info);
     rec.status = 'ongoing';
+    rec.progress = Host.jobProgress(this.world, unit, a, info);
+  }
+
+  /** Explain an action that applyAction rejected without starting a job. This
+   *  runs immediately after application, while the world still contains the
+   *  evidence needed to make the reason useful to a player. */
+  private initialFailureReason(action: Action, unit: Unit): string {
+    if (unit.job || unit.craftJob || unit.buildJob) return 'Unit is busy with another task.';
+    switch (action.type) {
+      case 'move':
+        return 'Destination is outside the world.';
+      case 'harvest': {
+        const object = tileAt(this.world, action.target.x, action.target.y)?.object;
+        if (!object) return 'There is no resource to harvest there.';
+        const required = HARVEST_RULES[object.kind]?.require;
+        return required && !unit.tools.includes(required)
+          ? `Requires a ${required}.`
+          : 'No reachable tile is adjacent to the resource.';
+      }
+      case 'craft': {
+        const recipe = RECIPES[action.recipe];
+        if (!recipe) return 'Unknown recipe.';
+        if (unit.tools.includes(action.recipe)) return `Unit already has a ${action.recipe}.`;
+        return 'Missing required crafting materials.';
+      }
+      case 'build': {
+        if (!BUILDINGS[action.building]) return 'Unknown building type.';
+        const tile = tileAt(this.world, action.at.x, action.at.y);
+        if (!tile || tile.object || tile.building) return 'Build site is not clear.';
+        return 'Missing materials or no reachable tile is adjacent to the build site.';
+      }
+      case 'drop':
+        return action.item ? `Unit has no ${action.item} to drop.` : 'Unit has nothing to drop, or the target is unreachable.';
+      case 'pickup':
+        return 'Nothing can be picked up there, or the target is unreachable.';
+      case 'dropNearby':
+      case 'cancel':
+        return 'Action could not be completed.';
+    }
   }
 
   /** After a tick, resolve any in-flight action whose job has ended: match the
@@ -347,6 +399,7 @@ export class Host {
       const unit = this.world.units[unitId];
       if (!unit) {
         rec.status = 'error';
+        rec.failureReason = 'Unit no longer exists.';
         this.unitAction.delete(unitId);
         continue;
       }
@@ -385,11 +438,34 @@ export class Host {
       }
       if (outcome) {
         rec.status = outcome;
+        if (outcome === 'error') rec.failureReason = this.completionFailureReason(a, unit);
         rec.progress = undefined; // finished — drop the bar
         this.unitAction.delete(unitId);
       } else {
-        rec.progress = Host.jobProgress(this.world, unit, a); // still running
+        rec.progress = Host.jobProgress(this.world, unit, a, info); // still running
       }
+    }
+  }
+
+  /** Explain a job that began successfully but later lost the ability to
+   *  complete. */
+  private completionFailureReason(action: Action, unit: Unit): string {
+    switch (action.type) {
+      case 'move': return 'Unit could not reach the destination.';
+      case 'harvest': {
+        const object = tileAt(this.world, action.target.x, action.target.y)?.object;
+        if (!object) return 'Resource was removed before harvest could finish.';
+        const required = HARVEST_RULES[object.kind]?.require;
+        return required && !unit.tools.includes(required)
+          ? `Unit no longer has the required ${required}.`
+          : 'Unit could no longer reach the resource.';
+      }
+      case 'build': return 'Build site became unavailable or could no longer be reached.';
+      case 'drop': return 'Unit could not reach the drop target.';
+      case 'pickup': return 'Unit could not reach the pickup target.';
+      case 'craft': return 'Crafting did not complete.';
+      case 'dropNearby':
+      case 'cancel': return 'Action could not be completed.';
     }
   }
 
@@ -401,7 +477,12 @@ export class Host {
     world: World,
     unit: Unit,
     a: Action,
+    info: { moveTotal?: number },
   ): { remaining: number; total: number } | undefined {
+    if (a.type === 'move') {
+      const remaining = Math.abs(unit.pos.x - a.to.x) + Math.abs(unit.pos.y - a.to.y);
+      return { remaining, total: info.moveTotal ?? Math.max(1, remaining) };
+    }
     if (a.type === 'harvest') {
       const obj = tileAt(world, a.target.x, a.target.y)?.object;
       if (!obj) return undefined;

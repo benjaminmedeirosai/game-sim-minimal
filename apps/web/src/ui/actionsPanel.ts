@@ -2,10 +2,11 @@
 // attributed to whoever submitted it (player or AI). Each row's left border is
 // colored by source; AI rows are badged. Fed by the actionLog store, which the
 // host refreshes with every snapshot.
-import { BUILDINGS, ITEMS, RECIPES, describeAction, parseCell, toCell, unitShort } from '@game/shared';
+import { BUILDINGS, ITEMS, RECIPES, parseCell, toCell, unitShort } from '@game/shared';
 import type { Action, ActionRecord, Coord, World } from '@game/shared';
 import { actionLog, sendAction } from '../net/client';
-import { game } from '../state/game';
+import { camera, game } from '../state/game';
+import { selection } from '../state/selection';
 import { actionStatusMark, isAi, sourceColor, sourceLabel } from './attribution';
 
 function esc(s: string): string {
@@ -15,7 +16,7 @@ function esc(s: string): string {
 }
 
 /** A thin progress bar for an in-flight action, mirroring the unit inspector's
- *  job bar. Only drawn while ongoing with live progress (harvest/craft/build). */
+ *  job bar. Only drawn while ongoing with live progress. */
 function progressBar(rec: ActionRecord): string {
   if (rec.status !== 'ongoing' || !rec.progress) return '';
   const { remaining, total } = rec.progress;
@@ -23,15 +24,51 @@ function progressBar(rec: ActionRecord): string {
   return `<div class="act-progress"><div class="act-fill" style="width:${Math.round(done * 100)}%"></div></div>`;
 }
 
+/** Compact action tokens: the verb opens its Controls reference, and location
+ *  parameters center the map. Keeping these as separate badges makes a log row
+ *  readable as a command rather than as prose. */
+function actionDescription(action: Action): string {
+  const verb = (label: string): string =>
+    `<button class="act-action-badge" type="button" data-action-doc="${esc(action.type)}" title="Show ${label} in Controls">${esc(label)}</button>`;
+  const param = (label: string): string => `<span class="act-param-badge">${esc(label)}</span>`;
+  const location = (coord: Coord): string => {
+    const cell = toCell(coord);
+    return `<button class="act-param-badge act-location-link" type="button" data-action-location="${esc(cell)}" title="Center map on ${esc(cell)}">${esc(cell)}</button>`;
+  };
+  const item = (itemId?: string, qty?: number): string => itemId ? (qty != null ? `${qty} ${itemId}` : itemId) : 'all';
+
+  switch (action.type) {
+    case 'move': return verb('Move') + location(action.to);
+    case 'harvest': return verb('Harvest') + location(action.target);
+    case 'craft': return verb('Craft') + param(action.recipe);
+    case 'build': return verb('Build') + param(action.building) + location(action.at);
+    case 'drop': return verb('Drop') + param(item(action.item, action.qty)) + location(action.at);
+    case 'dropNearby': return verb('Drop nearby') + param(item(action.item, action.qty));
+    case 'pickup': return verb('Pick up') + param(item(action.item, action.qty)) + location(action.at);
+    case 'cancel': return verb('Cancel job');
+  }
+}
+
+function centerLocation(value: string): void {
+  const cells = value.split(':').map(parseCell).filter((cell): cell is Coord => !!cell);
+  if (!cells.length) return;
+  const minX = Math.min(...cells.map((cell) => cell.x));
+  const maxX = Math.max(...cells.map((cell) => cell.x));
+  const minY = Math.min(...cells.map((cell) => cell.y));
+  const maxY = Math.max(...cells.map((cell) => cell.y));
+  camera.set({ cx: (minX + maxX + 1) / 2, cy: (minY + maxY + 1) / 2 });
+}
+
 function row(rec: ActionRecord): string {
   const color = sourceColor(rec.source);
   const label = esc(sourceLabel(rec.source));
   const badge = isAi(rec.source) ? '<span class="act-ai">AI</span>' : '';
-  const unit = `<span class="act-unit">${esc(unitShort(rec.action.unitId))}</span>`;
+  const unit = `<button class="act-unit act-unit-button" type="button" data-unit-id="${esc(rec.action.unitId)}" title="Select unit; click again to center the camera" aria-label="Select ${esc(rec.action.unitId)}; click again to center the camera">${esc(unitShort(rec.action.unitId))}</button>`;
   return (
     `<li class="act-row" data-action-id="${esc(rec.id)}" style="border-left-color:${color}">` +
-    `<div class="act-main">${badge}${actionStatusMark(rec.status)}${unit}<span class="act-desc">${esc(describeAction(rec.action))}</span></div>` +
+    `<div class="act-main">${badge}${actionStatusMark(rec.status, rec.failureReason)}${unit}<span class="act-desc">${actionDescription(rec.action)}</span></div>` +
     progressBar(rec) +
+    (rec.status === 'error' && rec.failureReason ? `<div class="act-failure">${esc(rec.failureReason)}</div>` : '') +
     `<div class="act-meta"><span class="act-who" style="color:${color}">${label}</span>` +
     `<span class="act-tick">t${rec.tick}</span></div>` +
     `</li>`
@@ -119,6 +156,31 @@ function actionFromTokens(tokens: string[], world: World | undefined): Action | 
   }
 }
 
+/** Area commands resolve to one visible tile before they are sent to the host.
+ *  Explain the common failure instead of presenting it as malformed syntax. */
+function actionInputError(tokens: string[], world: World | undefined): string | undefined {
+  if (!world || tokens.length < 3) return undefined;
+  const verb = tokens[0]?.toLowerCase();
+  const area = tokens[2];
+  if ((verb !== 'harvest' && verb !== 'pickup') || !area?.includes(':')) return undefined;
+  const [a, b] = area.split(':').map((part) => inBounds(part, world));
+  if (!a || !b) return `Area ${area} must use cells inside the map.`;
+  const unit = resolveUnit(tokens[1], world);
+  if (!unit) return undefined;
+  const found = nearestInRange(
+    world,
+    unit.pos,
+    area,
+    verb === 'harvest'
+      ? (x, y) => !!world.tiles[y * world.width + x]?.object
+      : (x, y) => !!world.tiles[y * world.width + x]?.items,
+  );
+  if (found) return undefined;
+  return verb === 'harvest'
+    ? `No visible harvestable resource in ${area}. Move a unit closer to reveal it.`
+    : `No visible ground items in ${area}. Move a unit closer to reveal them.`;
+}
+
 function suggestions(tokens: string[], trailingSpace: boolean, world: World | undefined): string[] {
   const index = trailingSpace ? tokens.length : tokens.length - 1;
   const typed = (trailingSpace ? '' : tokens[index] ?? '').toLowerCase();
@@ -202,10 +264,32 @@ export function mountActionsPanel(panel: HTMLElement): void {
     const option = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-action-option]')?.dataset.actionOption;
     if (option) choose(option);
   });
+  list.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const location = target.closest<HTMLButtonElement>('[data-action-location]')?.dataset.actionLocation;
+    if (location) { centerLocation(location); return; }
+    const actionType = target.closest<HTMLButtonElement>('[data-action-doc]')?.dataset.actionDoc;
+    if (actionType) {
+      window.dispatchEvent(new CustomEvent<string>('game:show-action-doc', { detail: actionType }));
+      return;
+    }
+    const unitId = target.closest<HTMLButtonElement>('[data-unit-id]')?.dataset.unitId;
+    const unit = unitId && game.get().world?.units[unitId];
+    if (!unit) return;
+    const selected = selection.get().unitId === unitId;
+    selection.set({ unitId });
+    if (selected) camera.set({ cx: unit.pos.x + 0.5, cy: unit.pos.y + 0.5 });
+  });
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    const action = actionFromTokens(input.value.trim().split(/\s+/).filter(Boolean), game.get().world);
-    if (!action) { helpOpen = true; help.innerHTML = `<span class="action-error">Complete a valid action before running it.</span>`; return; }
+    const tokens = input.value.trim().split(/\s+/).filter(Boolean);
+    const world = game.get().world;
+    const action = actionFromTokens(tokens, world);
+    if (!action) {
+      helpOpen = true;
+      help.innerHTML = `<span class="action-error">${esc(actionInputError(tokens, world) ?? 'Complete a valid action before running it.')}</span>`;
+      return;
+    }
     sendAction(action);
     input.value = '';
     helpOpen = true;

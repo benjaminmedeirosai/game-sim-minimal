@@ -547,7 +547,8 @@ function updateInfo(info: HTMLElement): void {
 
   info.innerHTML =
     `<div class="sel-head"><b>${u.id}</b> <span class="muted">${toCell(u.pos)}</span>` +
-    ` <span class="sel-doing">${doing}</span></div>` +
+    ` <span class="sel-doing">${doing}</span>` +
+    `<button class="icon-btn sel-center" type="button" data-center-unit="1" title="Center on ${u.id}" aria-label="Center on ${u.id}">⌖</button></div>` +
     `<div class="sel-stats">${statsHtml}</div>` +
     `<div class="sel-row"><span class="sel-label">Tools</span>${toolsHtml}</div>` +
     `<div class="sel-row"><span class="sel-label">Bag</span>${bagHtml}</div>` +
@@ -715,12 +716,15 @@ function attachMenu(info: HTMLElement): void {
 
   info.addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLElement>(
-      '[data-craft],[data-build],[data-cancel],[data-drop]',
+      '[data-craft],[data-build],[data-cancel],[data-drop],[data-center-unit]',
     );
     if (!btn) return;
     const selId = selection.get().unitId;
     if (!selId) return;
-    if (btn.dataset.cancel) {
+    if (btn.dataset.centerUnit) {
+      const unit = game.get().world?.units[selId];
+      if (unit) camera.set({ cx: unit.pos.x + 0.5, cy: unit.pos.y + 0.5 });
+    } else if (btn.dataset.cancel) {
       // Stop the unit's current non-interruptible job (refunds craft inputs).
       sendAction({ type: 'cancel', unitId: selId });
       selection.set({ pendingBuild: undefined });

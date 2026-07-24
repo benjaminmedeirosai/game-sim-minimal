@@ -197,7 +197,7 @@ function assetsTab(): string {
 
 interface ActionDoc {
   name: string;
-  type: string; // the strict command keyword the AI emits
+  type: string; // canonical shared Action type
   args: string;
   syntax: string;
   examples: string[];
@@ -208,7 +208,7 @@ interface ActionDoc {
 function actCard(a: ActionDoc): string {
   const copyText = `${a.syntax} — ${a.desc}\nExamples:\n${a.examples.join('\n')}`;
   return (
-    `<div class="cat-card act-card"><div class="cat-info">` +
+    `<div class="cat-card act-card" data-action-doc="${a.type}"><div class="cat-info">` +
     `<div class="cat-name">${a.name} <code class="act-type">${a.type}</code> <span class="act-args">${a.args}</span></div>` +
     `<div class="act-desc">${a.desc}</div>` +
     `<div class="cat-stats">` +
@@ -264,7 +264,7 @@ const UNIT_ACTIONS: ActionDoc[] = [
   },
   {
     name: 'Drop nearby',
-    type: 'dropnearby',
+    type: 'dropNearby',
     args: '&lt;id&gt; [item] [qty]',
     syntax: 'dropnearby <id> [item] [qty]',
     examples: ['dropnearby unit0', 'dropnearby unit0 wood 10'],
@@ -312,8 +312,10 @@ function actionsTab(): string {
 
 type Tab = 'hotkeys' | 'guide' | 'assets' | 'actions';
 
-export function mountControls(el: HTMLElement): void {
+export function mountControls(el: HTMLElement): { showAction: (type: string) => void } {
   let tab: Tab = 'hotkeys';
+  let settleTimer: number | undefined;
+  let stopScrollWatch: (() => void) | undefined;
   el.innerHTML = `
     <h2>Controls</h2>
     <div class="ai-tabs" id="ctl-tabs">
@@ -360,4 +362,32 @@ export function mountControls(el: HTMLElement): void {
   });
 
   render();
+
+  const showAction = (type: string): void => {
+    if (tab !== 'actions') {
+      tab = 'actions';
+      render();
+    }
+    const card = body.querySelector<HTMLElement>(`[data-action-doc="${CSS.escape(type)}"]`);
+    if (!card) return;
+    stopScrollWatch?.();
+    window.clearTimeout(settleTimer);
+    const pulse = (): void => {
+      stopScrollWatch?.();
+      stopScrollWatch = undefined;
+      card.classList.remove('act-card-pulse');
+      void card.offsetWidth; // restart the pulse for repeated selections
+      card.classList.add('act-card-pulse');
+    };
+    const settle = (): void => {
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(pulse, 140);
+    };
+    el.addEventListener('scroll', settle, { passive: true });
+    stopScrollWatch = () => el.removeEventListener('scroll', settle);
+    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    settle(); // also handles cards already in view (no scroll event)
+  };
+
+  return { showAction };
 }

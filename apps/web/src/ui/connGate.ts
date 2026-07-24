@@ -79,12 +79,7 @@ function shell(inner: string): string {
   return `
     <div class="gate-card">
       <div class="gate-logo" aria-hidden="true">
-        <svg viewBox="0 0 64 64" width="56" height="56">
-          <rect x="6" y="6" width="52" height="52" rx="10" fill="#1b1e27" stroke="#2b2f3a"/>
-          <circle cx="24" cy="26" r="5" fill="#6ea8fe"/>
-          <circle cx="40" cy="26" r="5" fill="#52c785"/>
-          <circle cx="32" cy="42" r="5" fill="#d1963c"/>
-        </svg>
+        <img class="gate-logo-image" src="/favicon.svg" alt="" />
       </div>
       <h1 class="gate-title">game-sim-minimal</h1>
       <p class="gate-sub">A milestone-gated multiplayer colony sim.</p>

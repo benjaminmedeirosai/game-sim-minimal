@@ -6,6 +6,12 @@ import type { ActionSource, ActionStatus } from '@game/shared';
 
 const AI_COLOR = '#a78bfa';
 
+function escAttr(value: string): string {
+  return value.replace(/[&<>"]/g, (char) =>
+    char === '&' ? '&amp;' : char === '<' ? '&lt;' : char === '>' ? '&gt;' : '&quot;',
+  );
+}
+
 function hueFrom(seed: string): number {
   let h = 0;
   for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
@@ -40,8 +46,9 @@ const STATUS_MARK: Record<ActionStatus, { cls: string; sym: string; title: strin
  *  shared by the Actions panel and the AI History so both read the same. Empty
  *  string when the status is unknown (older records, or an AI-history action not
  *  found in the live log), so nothing is drawn rather than a misleading icon. */
-export function actionStatusMark(status: ActionStatus | undefined): string {
+export function actionStatusMark(status: ActionStatus | undefined, failureReason?: string): string {
   if (!status) return '';
   const m = STATUS_MARK[status];
-  return `<span class="act-status ${m.cls}" title="${m.title}">${m.sym}</span>`;
+  const title = status === 'error' && failureReason ? `Failed — ${failureReason}` : m.title;
+  return `<span class="act-status ${m.cls}" title="${escAttr(title)}">${m.sym}</span>`;
 }
